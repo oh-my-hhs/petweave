@@ -22,6 +22,8 @@ use petweave_core::events::Event;
 use petweave_core::pet::{Pet, PetId};
 use petweave_core::render::Frame;
 
+use crate::runtime::paws::{Paw, paw_for_keycode};
+
 use image::imageops::FilterType;
 
 const PNG_BOTH_UP: &str = "bongo-cat-both-up.png";
@@ -36,35 +38,6 @@ enum FrameId {
     RightDown = 2,
     BothDown = 3,
     Sleeping = 4,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Paw {
-    Left,
-    Right,
-}
-
-impl Paw {
-    fn swapped(self) -> Paw {
-        match self {
-            Paw::Left => Paw::Right,
-            Paw::Right => Paw::Left,
-        }
-    }
-}
-
-/// Physical-position paw mapping (Linux keycodes), same table as
-/// wayland-bongocat's `paw_for_keycode`.
-fn paw_for_keycode(code: u32) -> Paw {
-    const LEFT_KEYS: &[u32] = &[
-        1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 29, 30, 31, 32, 33, 34, 41, 42, 44, 45, 46,
-        47, 48, 56, 58, 125,
-    ];
-    if LEFT_KEYS.contains(&code) {
-        Paw::Left
-    } else {
-        Paw::Right
-    }
 }
 
 /// Frame selection from live paw state (reference `frame_from_paw_state`).

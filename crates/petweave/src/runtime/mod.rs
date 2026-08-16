@@ -1,6 +1,7 @@
 //! Pet runtime: owns loaded pet instances and their render frames.
 
 pub mod builtin;
+pub mod paws;
 
 use std::time::Instant;
 
@@ -9,7 +10,7 @@ use petweave_core::events::Event;
 use petweave_core::render::Frame;
 use petweave_core::Pet;
 
-use crate::runtime::builtin::{BongoPet, DemoPet};
+use crate::runtime::builtin::{BongoPet, DemoPet, SpritePet};
 
 /// Collection of running pet instances.
 ///
@@ -38,6 +39,21 @@ impl Runtime {
                     Ok(p) => Some(Box::new(p)),
                     Err(e) => {
                         tracing::error!("failed to load bongo pet: {e}");
+                        None
+                    }
+                },
+                "sprite" => match crate::package::resolve(&pet_cfg.package)
+                    .and_then(|dir| crate::package::read_manifest(&dir).map(|m| (m, dir)))
+                {
+                    Ok((manifest, dir)) => match SpritePet::new(&manifest, &dir) {
+                        Ok(p) => Some(Box::new(p)),
+                        Err(e) => {
+                            tracing::error!("failed to load sprite pet: {e}");
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!("failed to load package: {e}");
                         None
                     }
                 },

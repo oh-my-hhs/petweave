@@ -24,4 +24,9 @@ calloop-wayland-source.workspace = true
 nix.workspace = true
 libc.workspace = true
 sysinfo.workspace = true
+zip.workspace = true
+walkdir.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tempfile.workspace = true

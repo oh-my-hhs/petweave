@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod graphics;
+mod package;
 mod platform;
 mod runtime;
 
@@ -31,6 +32,9 @@ fn main() -> Result<()> {
     if matches!(cli.command, Some(Command::ListDevices)) {
         print_keyboards();
         return Ok(());
+    }
+    if let Some(cmd) = &cli.command {
+        return run_package_command(cmd);
     }
     if cli.list_devices {
         print_keyboards();
@@ -154,6 +158,45 @@ fn print_keyboards() {
     for d in &devices {
         println!("{}\t{}", d.path.display(), d.name);
     }
+}
+
+// --- package subcommands ----------------------------------------------------
+
+fn run_package_command(cmd: &Command) -> Result<()> {
+    use crate::package;
+    let e = |e: String| anyhow::anyhow!(e);
+    match cmd {
+        Command::Install { path } => {
+            let name = package::install(path).map_err(e)?;
+            println!("installed {name}");
+        }
+        Command::Uninstall { name } => {
+            package::uninstall(name).map_err(e)?;
+            println!("uninstalled {name}");
+        }
+        Command::List => {
+            let pkgs = package::list();
+            if pkgs.is_empty() {
+                println!("no packages installed (repo: {})", package::repo_dir().display());
+                return Ok(());
+            }
+            println!("installed packages ({}):", package::repo_dir().display());
+            for p in &pkgs {
+                let desc = p.description.as_deref().unwrap_or("-");
+                println!("  {:<20} v{:<10} kind={:<8} {}", p.name, p.version, p.kind, desc);
+            }
+        }
+        Command::Package { dir, output } => {
+            package::build(dir, output).map_err(e)?;
+            println!("built {}", output.display());
+        }
+        Command::Import { input, output } => {
+            package::import_xpm(input, output).map_err(e)?;
+            println!("imported {} -> {}", input.display(), output.display());
+        }
+        _ => unreachable!("other commands handled elsewhere"),
+    }
+    Ok(())
 }
 
 // --- doctor ----------------------------------------------------------------

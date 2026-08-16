@@ -7,6 +7,7 @@
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod manifest;
 pub mod pet;
 pub mod render;
 

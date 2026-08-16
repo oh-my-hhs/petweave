@@ -1,0 +1,33 @@
+# Minimal grid-sheet demo (Codex 8xN-style): a 2x2 grid, idle cycles all four
+# cells, a key press flashes white.
+# Install: petweave install packages/blinky
+# The sheet PNG is generated from blinky.xpm with: petweave import blinky.xpm -o blinky.png
+
+[meta]
+name = "blinky"
+version = "1.0.0"
+author = "PetWeave"
+license = "MIT"
+description = "Minimal 2x2 grid-sheet demo pet"
+
+[pet]
+kind = "sprite"
+
+[animations.idle]
+sheet = "sprites/blinky.png"
+cell_width = 10
+cell_height = 10
+frames = [0, 1, 2, 3]
+fps = 4
+loop = true
+
+[animations.flash]
+sheet = "sprites/blinky.png"
+cell_width = 10
+cell_height = 10
+frames = [3]
+fps = 8
+
+[reactions]
+idle = "idle"
+key-left = "flash"

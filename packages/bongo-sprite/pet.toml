@@ -1,0 +1,50 @@
+# Bongo Cat as a declarative sprite package — dogfood of the role-package format.
+# Install: petweave install packages/bongo-sprite
+# Run:     petweave -c <config with kind="sprite" package="bongo-sprite">
+
+[meta]
+name = "bongo-sprite"
+version = "1.0.0"
+author = "PetWeave"
+license = "MIT"
+description = "Bongo Cat paw reactions, packaged as a declarative sprite pet"
+
+[pet]
+kind = "sprite"
+surface_width = 264
+surface_height = 110
+
+[animations.idle]
+sheet = "sprites/both-up.png"
+cell_width = 864
+cell_height = 360
+frames = [0]
+fps = 1
+loop = true
+
+[animations.paw-left]
+sheet = "sprites/left-down.png"
+cell_width = 864
+cell_height = 360
+frames = [0]
+fps = 8
+
+[animations.paw-right]
+sheet = "sprites/right-down.png"
+cell_width = 864
+cell_height = 360
+frames = [0]
+fps = 8
+
+[animations.both-down]
+sheet = "sprites/both-down.png"
+cell_width = 864
+cell_height = 360
+frames = [0]
+fps = 8
+
+[reactions]
+idle = "idle"
+key-left = "paw-left"
+key-right = "paw-right"
+key-both = "both-down"

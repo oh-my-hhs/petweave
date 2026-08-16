@@ -9,7 +9,7 @@
 |---|---|---|
 | M0 项目骨架 | ✅ 完成 | 编译通过、单测通过、niri 上实测可显示 |
 | M1 BongoCat 移植 | ✅ 完成 | 爪击动画/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
-| M2 SDK / 角色包 | ⏳ 未开始 | |
+| M2 SDK / 角色包 | 🔄 进行中 | 包格式/声明式精灵宠物/CLI/示例包已完成；Lua 运行时受阻于离线依赖 |
 | M3 交互升级 | ⏳ 未开始 | |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
@@ -59,14 +59,17 @@
 
 ## M2 SDK / 角色包（核心差异化：从"应用"到"平台"）
 
-- [ ] `.petweave` 角色包格式：zip + `pet.toml`（元数据/许可证/缩略图）+ assets + 签名
-- [ ] 声明式宠物运行时：精灵表 PNG + 动作表（走/待机/点击反应），零代码
-- [ ] 经典资产导入器：Oneko 精灵表、Codex 8×9/8×11 图集
-- [ ] Lua 脚本运行时（mlua 沙箱：白名单 API、资源上限）
-- [ ] Lua API v1：事件（`on_key/on_pointer/on_tick/on_fullscreen/on_system`）+ 动作（`play/move_to/speak`）+ 查询（`sys.*/focus.*`）
-- [ ] `petweave install/uninstall/list` CLI + 本地角色包仓库
-- [ ] 角色包制作教程文档
-- [ ] 预置包：BongoCat（SVG 资产）、Oneko（精灵表）
+- [x] `.petweave` 角色包格式：目录 + zip 打包，`pet.toml` 清单（元数据/动画/事件接线）+ assets
+- [x] 清单校验（名字安全、网格整除、reaction 引用存在）—— `petweave-core::manifest`
+- [x] 声明式精灵宠物运行时：网格精灵表（Codex 8×N 风格）、循环/一次性动画、
+      `idle`/`key-left`/`key-right`/`key-both` 事件接线、大图缩放到表面尺寸
+- [x] 包管理 CLI：`install`（目录或 zip）、`uninstall`、`list`、`package`（打包）、
+      `import`（Oneko XPM → PNG）；仓库位于 `$XDG_DATA_HOME/petweave/pets/`
+- [x] 预置示例包：`packages/bongo-sprite`（声明式 BongoCat 吃狗粮）、`packages/blinky`（网格示例）
+- [x] 教程文档 `docs/PACKAGES.md`
+- [ ] Lua 脚本运行时（mlua 沙箱）—— **受阻**：离线缓存无 `mlua`，联网后实现
+- [ ] Lua API v1（事件/动作/查询）—— 随 Lua 运行时
+- [ ] 签名与社区商店—— 包格式预留 `signature` 位置
 
 ## M3 交互升级
 

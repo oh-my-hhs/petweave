@@ -68,8 +68,10 @@ pub struct PetConfig {
     pub name: String,
     /// Whether the pet is loaded.
     pub enabled: bool,
-    /// Pet kind: "demo" | "bongo" (role packages arrive with M2).
+    /// Pet kind: "demo" | "bongo" | "sprite" (installed role package).
     pub kind: String,
+    /// Installed package name or path for `kind = "sprite"`.
+    pub package: String,
     /// Demo pet base color as #rrggbb[aa].
     pub color: String,
     /// BongoCat-specific options.
@@ -154,6 +156,7 @@ impl Default for PetConfig {
             name: "demo".to_string(),
             enabled: true,
             kind: "demo".to_string(),
+            package: String::new(),
             color: "#ff6699".to_string(),
             bongo: BongoConfig::default(),
         }
@@ -214,12 +217,17 @@ impl Config {
             }
         }
         match self.pet.kind.as_str() {
-            "demo" | "bongo" => {}
+            "demo" | "bongo" | "sprite" => {}
             other => {
                 return Err(Error::Config(format!(
-                    "pet.kind must be one of demo|bongo, got {other:?}"
+                    "pet.kind must be one of demo|bongo|sprite, got {other:?}"
                 )));
             }
+        }
+        if self.pet.kind == "sprite" && self.pet.package.is_empty() {
+            return Err(Error::Config(
+                "pet.kind = \"sprite\" requires pet.package (installed name or path)".into(),
+            ));
         }
         if !(10..=500).contains(&self.pet.bongo.cat_height) {
             return Err(Error::Config("pet.bongo.cat_height must be in 10..=500".into()));

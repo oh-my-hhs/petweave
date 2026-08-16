@@ -1,7 +1,9 @@
-//! Built-in pets (temporary; replaced by role packages in M2).
+//! Built-in pets (temporary; role packages arrive with M2).
 
 pub mod bongo;
 pub mod demo;
+pub mod sprite;
 
 pub use bongo::BongoPet;
 pub use demo::DemoPet;
+pub use sprite::SpritePet;

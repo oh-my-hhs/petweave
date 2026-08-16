@@ -66,4 +66,32 @@ pub enum Command {
     },
     /// Alias for `--list-devices`: list detected keyboard devices.
     ListDevices,
+    /// Install a role package (directory or .petweave file) into the repo.
+    Install {
+        #[arg(value_name = "DIR_OR_FILE")]
+        path: PathBuf,
+    },
+    /// Remove an installed package.
+    Uninstall {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// List installed packages.
+    List,
+    /// Build a .petweave package (zip) from a package directory.
+    Package {
+        /// Package directory containing pet.toml.
+        dir: PathBuf,
+        /// Output .petweave file.
+        #[arg(short, long, value_name = "OUT")]
+        output: PathBuf,
+    },
+    /// Convert an XPM sprite sheet (e.g. Oneko's oneko.xpm) to PNG.
+    Import {
+        /// Input .xpm file.
+        input: PathBuf,
+        /// Output .png file.
+        #[arg(short, long, value_name = "OUT")]
+        output: PathBuf,
+    },
 }

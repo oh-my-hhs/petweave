@@ -6,6 +6,7 @@
 - 原生 Wayland（`wlr-layer-shell`）：定位、全屏自动隐藏、多显示器、HiDPI
 - 配置热重载、键盘热插拔、进程单例、优雅退出
 - 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植）
+- **角色包**：声明式精灵宠物（零代码），`install/uninstall/list/package/import` 工具链，见 [docs/PACKAGES.md](docs/PACKAGES.md)
 
 创新点说明见 [Innovation.md](Innovation.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md)
 

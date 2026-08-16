@@ -3,3 +3,5 @@
 /.cargo-home
 /Reference
 *.log
+/.obsidian
+.scratch*

@@ -2,11 +2,18 @@
 
 一个 **Wayland 原生的桌宠框架**：运行时 + SDK 约定，让"做一个桌宠"变成"写一个角色包"。内置 BongoCat，支持零代码精灵宠物与 Lua 脚本宠物。
 
+<p align="center">
+  <img src="docs/images/hero.png" alt="PetWeave 预置宠物：BongoCat（左）、blinky 网格宠物（中）、Lua 气泡宠物（右）" width="720"/>
+  <br/>
+  <sub>预置宠物：BongoCat 爪击（左）· blinky 网格宠物（中）· Lua 气泡宠物（右）</sub>
+</p>
+
 - 极轻量：实测空闲 RSS ≈ **5MB**、空闲 CPU ~0%（无 WebView/GTK/Qt 运行时）
 - 原生 Wayland（`wlr-layer-shell`）：定位、全屏自动隐藏、多显示器、HiDPI
 - 配置热重载、键盘热插拔、进程单例、优雅退出
 - 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植，SVG 睡眠帧）
-- **角色包**：`.petweave` 格式 + 声明式精灵宠物（零代码）+ **Lua 脚本宠物**（mlua 沙箱、气泡对话），工具链 `install/uninstall/list/package/import`，教程见 [docs/PACKAGES.md](docs/PACKAGES.md)
+- **角色包**：`.petweave` 格式 + 声明式精灵宠物（零代码）+ **Lua 脚本宠物**（mlua 沙箱、气泡对话），工具链 `install/uninstall/list/package/import`
+- **生态开放**：创建角色包 → [docs/PACKAGES.md](docs/PACKAGES.md)（从零教程）· 贡献与投稿 → [CONTRIBUTING.md](CONTRIBUTING.md)
 
 创新点说明见 [Innovation.md](Innovation.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md)
 
@@ -58,6 +65,10 @@ EOF
 petweave
 ```
 
+<p align="center">
+  <img src="docs/images/bongo.png" alt="BongoCat 在 PetWeave 上的渲染" width="480"/>
+</p>
+
 #### 样例 B：安装角色包并运行（bongo-sprite 全流程）
 
 ```bash
@@ -97,6 +108,12 @@ name = "lua"
 EOF
 petweave
 ```
+
+<p align="center">
+  <img src="docs/images/lua-demo.png" alt="lua-demo 宠物：按键说话 + 气泡" width="320"/>
+  <br/>
+  <sub>lua-demo：脚本驱动的气泡对话与动画切换</sub>
+</p>
 
 `packages/lua-demo/main.lua` 的行为：启动时气泡问候 → 按键播放 flash 动画并气泡显示键码 → CPU 超过 90% 时气泡提醒：
 
@@ -216,7 +233,17 @@ sleep_begin = "22:00"          # 睡眠窗口开始（24h）
 sleep_end = "06:00"            # 睡眠窗口结束（24h）
 ```
 
-完整示例见 [`petweave.toml.example`](petweave.toml.example)；角色包清单（`pet.toml`）格式见 [docs/PACKAGES.md](docs/PACKAGES.md)。
+完整示例见 [`petweave.toml.example`](petweave.toml.example)；角色包清单（`pet.toml`）的**从零创建教程、字段全参考、Lua 进阶玩法、发布自检清单**见 [docs/PACKAGES.md](docs/PACKAGES.md)。
+
+## 加入 PetWeave 生态
+
+PetWeave 的长期生命力来自**大家一起创作角色包**。三种参与方式任选：
+
+1. **做宠物（最简单）**：按 [docs/PACKAGES.md](docs/PACKAGES.md) 从零创建——目录 + `pet.toml` + 素材即可，零代码精灵宠物或 Lua 脚本宠物，`--preview` 无需 Wayland 即可调试，`petweave package` 一键打包发布。
+2. **投稿**：把做好的 `.petweave` 发布到 GitHub Releases，并按 [CONTRIBUTING.md](CONTRIBUTING.md) 提交到社区列表，让更多人用上你的宠物。
+3. **写框架**：M3 交互升级（拖拽/物理/多宠物/托盘）、M4 深度集成（GPU/Live2D）都等着你，见 [docs/ROADMAP.md](docs/ROADMAP.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+> 社区列表（`docs/ECOSYSTEM.md`）正在建设中——你的第一个角色包，就是它的第一条记录。 🐾
 
 ### 行为说明
 
@@ -247,6 +274,6 @@ crates/
   petweave/        主机：cli / app(事件循环) / package / platform / graphics / runtime
 assets/bongocat/   内置 BongoCat 素材（PNG 帧 + sleeping SVG，MIT，署名见目录内 README）
 packages/          预置角色包：bongo-sprite（声明式 BongoCat）/ blinky（网格示例）/ lua-demo（Lua 示例）
-docs/              技术栈分析 + 实现计划 + 角色包教程 + Live2D 路线
+docs/              技术栈分析 + 实现计划 + 角色包教程 + Live2D 路线 + 社区列表 + 配图
 petweave.toml.example
 ```

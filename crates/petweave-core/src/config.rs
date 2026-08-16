@@ -25,6 +25,8 @@ pub struct General {
     pub log_level: String,
     /// How often to sample CPU/memory and emit `Event::System` (0 = off).
     pub sysinfo_interval_secs: u64,
+    /// Register a StatusNotifierItem tray icon (show/hide + quit menu).
+    pub tray_enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +120,7 @@ impl Default for General {
             fps: 60,
             log_level: "info".to_string(),
             sysinfo_interval_secs: 5,
+            tray_enabled: true,
         }
     }
 }

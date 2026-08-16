@@ -30,7 +30,7 @@ mlua.workspace = true
 resvg.workspace = true
 ab_glyph.workspace = true
 tiny-skia.workspace = true
-ksni = "0.3.6"
+ksni = { version = "0.3.6", features = ["blocking"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [dev-dependencies]

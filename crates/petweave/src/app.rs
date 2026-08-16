@@ -18,6 +18,7 @@ use crate::platform::config_watcher::ConfigWatcher;
 use crate::platform::fullscreen::{FullscreenHandler, FullscreenTracker};
 use crate::platform::input::InputReader;
 use crate::platform::system::SystemSampler;
+use crate::platform::tray::{PetTray, TrayShared};
 use crate::platform::wayland::WaylandState;
 use crate::runtime::Runtime;
 
@@ -26,6 +27,10 @@ use crate::runtime::Runtime;
 pub enum HostCommand {
     /// The config file changed on disk.
     ReloadConfig,
+    /// Toggle pet visibility (tray left-click / menu).
+    ToggleVisible,
+    /// Quit the host (tray menu).
+    Quit,
 }
 
 /// Top-level host state. Also the `Data` type for every sctk/calloop handler.
@@ -38,6 +43,12 @@ pub struct App {
     pub wayland: WaylandState,
     pub runtime: Runtime,
     pub fullscreen: FullscreenTracker,
+    /// Whether the pet is currently visible (tray toggle).
+    pub visible: bool,
+    /// Shared tray state (visibility mirror for the menu label).
+    pub tray_shared: Option<std::sync::Arc<std::sync::Mutex<TrayShared>>>,
+    /// Tray service handle (kept alive; refreshed on visibility changes).
+    pub tray_handle: Option<ksni::blocking::Handle<PetTray>>,
     /// Cached transparent frame used to blank the surface while hidden.
     blank: Option<Frame>,
     /// Set when a redraw is wanted (input events, layer configure, …).
@@ -56,9 +67,12 @@ impl App {
         if !self.wayland.configured {
             return Ok(());
         }
-        // Skip fullscreen hiding on the overlay layer or when disabled.
+        // Hidden by the user (tray toggle) or by a fullscreen window
+        // (overlay layer / disable_fullscreen_hide opt out).
         let is_overlay = self.config.render.layer == "overlay";
-        if self.fullscreen.hidden && !is_overlay && !self.config.render.disable_fullscreen_hide {
+        let fullscreen_hidden =
+            self.fullscreen.hidden && !is_overlay && !self.config.render.disable_fullscreen_hide;
+        if !self.visible || fullscreen_hidden {
             // Present a transparent frame so the pet actually disappears.
             let (w, h) = (self.wayland.width, self.wayland.height);
             let blank = self.blank.get_or_insert_with(|| Frame::new(w, h));
@@ -110,8 +124,7 @@ impl App {
     }
 
     /// Hot reload: re-read + re-validate the config file and apply changes.
-    pub fn reload_config(&mut self) {
-        let Some(path) = &self.config_path else {
+    pub fn reload_config(&mut self) {        let Some(path) = &self.config_path else {
             return;
         };
         let mut cfg = match Config::load(Some(path)) {
@@ -174,6 +187,9 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         wayland,
         runtime,
         fullscreen: FullscreenTracker::new(),
+        visible: true,
+        tray_shared: None,
+        tray_handle: None,
         blank: None,
         needs_redraw: false,
         exit: false,
@@ -219,19 +235,45 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         std::time::Duration::from_secs(app.config.general.sysinfo_interval_secs),
     );
 
-    // Config watcher -> HostCommand::ReloadConfig.
+    // Config watcher -> HostCommand; the tray also emits host commands, so
+    // this channel must exist before the tray is spawned.
     let (host_tx, host_rx): (
         calloop::channel::Sender<HostCommand>,
         Channel<HostCommand>,
     ) = calloop::channel::channel();
     loop_handle
         .insert_source(host_rx, |event, _, app| {
-            if let calloop::channel::Event::Msg(HostCommand::ReloadConfig) = event {
-                app.reload_config();
+            if let calloop::channel::Event::Msg(cmd) = event {
+                match cmd {
+                    HostCommand::ReloadConfig => app.reload_config(),
+                    HostCommand::ToggleVisible => {
+                        app.visible = !app.visible;
+                        if let Some(shared) = &app.tray_shared {
+                            shared.lock().unwrap().visible = app.visible;
+                        }
+                        if let Some(handle) = &app.tray_handle {
+                            let _ = handle.update(|_| {});
+                        }
+                        tracing::info!(
+                            "pet visibility: {}",
+                            if app.visible { "shown" } else { "hidden" }
+                        );
+                        app.needs_redraw = true;
+                    }
+                    HostCommand::Quit => {
+                        tracing::info!("quit requested from tray");
+                        app.exit = true;
+                    }
+                }
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to register host channel: {e}"))?;
-    let _watcher = ConfigWatcher::start(app.config_path.clone(), host_tx);
+    let _watcher = ConfigWatcher::start(app.config_path.clone(), host_tx.clone());
+
+    // System tray (StatusNotifierItem) with the pet as its icon.
+    if app.config.general.tray_enabled {
+        spawn_tray(&mut app, host_tx);
+    }
 
     // Graceful shutdown on SIGINT/SIGTERM.
     let signals = calloop::signals::Signals::new(&[
@@ -281,4 +323,43 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
 
     tracing::info!("shutting down");
     Ok(())
+}
+
+/// Spawn the StatusNotifierItem tray with the pet rendered as its icon.
+fn spawn_tray(
+    app: &mut App,
+    host_tx: calloop::channel::Sender<HostCommand>,
+) {
+    // Render the first pet into an icon frame.
+    let mut icon_frame = None;
+    if let Some(pet) = app.runtime.pets.first() {
+        let (w, h) = pet.preferred_size().unwrap_or((64, 64));
+        let mut frame = petweave_core::render::Frame::new(w, h);
+        pet.render(&mut frame);
+        icon_frame = Some(frame);
+    }
+
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(TrayShared {
+        visible: true,
+    }));
+    let tray = PetTray::new(
+        shared.clone(),
+        host_tx,
+        icon_frame.as_ref(),
+        format!(
+            "PetWeave · {}",
+            app.runtime.pets.first().map(|p| p.name()).unwrap_or("?")
+        ),
+    );
+    use ksni::blocking::TrayMethods;
+    match tray.assume_sni_available(true).spawn() {
+        Ok(handle) => {
+            tracing::info!("tray icon registered (StatusNotifierItem)");
+            app.tray_shared = Some(shared);
+            app.tray_handle = Some(handle);
+        }
+        Err(e) => {
+            tracing::warn!("tray unavailable (no StatusNotifierWatcher?): {e}");
+        }
+    }
 }

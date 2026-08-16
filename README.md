@@ -190,6 +190,7 @@ sudo usermod -aG input $USER
 fps = 60                       # 动画帧率上限 1–240
 log_level = "info"             # trace|debug|info|warn|error
 sysinfo_interval_secs = 5      # CPU/内存采样间隔（秒），0=关闭 → 触发 Event::System
+tray_enabled = true            # 托盘图标（左键显示/隐藏宠物，菜单含退出）
 
 [input]
 enabled = true                 # 全局键盘捕获开关
@@ -245,6 +246,7 @@ PetWeave 的长期生命力来自**大家一起创作角色包**。三种参与�
 - **热重载**：改 `[render]` 的 layer/anchor/margins 与 `[pet]`/`[pet.bongo]` 参数即时生效（bongo 改 `cat_height` 会重新缩放）；改 `pet.kind` 或 `render.output` 需重启。
 - **睡眠**：`idle_sleep_timeout_secs` 到期或处于定时窗口时显示"睡着"的猫（官方 SVG 素材栅格化）；定时睡眠期间按键被忽略，闲置睡眠按键即可唤醒。
 - **全屏隐藏**：检测到（激活的）全屏窗口时自动隐藏宠物；`layer = "overlay"` 或 `disable_fullscreen_hide = true` 可跳过。注意：niri 未实现 `wlr-foreign-toplevel-management`，此功能在其上不生效（优雅降级，始终显示）。
+- **托盘**：注册 StatusNotifierItem（需要桌面环境/面板提供 StatusNotifierWatcher）；左键切换宠物显示/隐藏，右键菜单可退出；无 Watcher 时优雅跳过。
 - **单例**：同账号同时只能运行一个实例（flock 型 PID 文件 `$XDG_RUNTIME_DIR/petweave.pid`）。
 - **多显示器/HiDPI**：`render.output` 指定显示器名称（`wlr-randr` / `niri msg outputs` 查看）；整数倍缩放按 buffer_scale 物理渲染，高分屏下清晰。
 - **系统感知**：`sysinfo_interval_secs` 间隔向宠物推送 CPU/内存快照；Lua 宠物可写 `on_system(cpu, mem)` 响应（如 CPU 过载提醒）。

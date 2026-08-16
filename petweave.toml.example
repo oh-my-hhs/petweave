@@ -10,6 +10,8 @@ fps = 60
 log_level = "info"
 # How often to sample CPU/memory and notify pets (Event::System). 0 = off.
 sysinfo_interval_secs = 5
+# Register a StatusNotifierItem tray icon (left-click show/hide, menu with quit).
+tray_enabled = true
 
 [input]
 # Master switch for global keyboard capture.

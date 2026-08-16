@@ -83,7 +83,8 @@
 - [ ] 轻物理：重力 + 桌面边缘碰撞 + 弹性衰减（自研，不引引擎）
 - [ ] 多宠物共存：进程内多实例（共享 Wayland 连接与资产缓存）
 - [ ] 点击穿透：`wl_surface.set_input_region` 按宠物形状收窄
-- [ ] 托盘图标（ksni）+ 设置面板（egui，独立进程可选）
+- [x] 托盘图标（ksni，StatusNotifierItem：左键显隐、菜单退出，`tray_enabled` 可关）
+- [ ] 设置面板（egui，独立进程可选）
 
 ## M4 深度集成
 

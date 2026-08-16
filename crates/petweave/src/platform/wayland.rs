@@ -346,8 +346,15 @@ impl WaylandState {
     }
 
     /// Switch to free positioning (anchor top|left) at `(x, y)` and commit.
+    ///
+    /// The layer-side anchor must be switched too: compositors interpret
+    /// margins against the *current* anchor, so a stale `right` anchor would
+    /// pin x to the right edge (right margin forced 0) and a bare `top`
+    /// anchor ignores the left margin entirely — both leave the pet
+    /// undraggable horizontally.
     pub fn set_free_position(&mut self, x: f64, y: f64) {
         self.anchor = Anchor::TOP | Anchor::LEFT;
+        self.layer.set_anchor(self.anchor);
         self.set_margins(y, x);
     }
 

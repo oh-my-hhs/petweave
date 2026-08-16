@@ -10,7 +10,7 @@ use petweave_core::events::Event;
 use petweave_core::render::Frame;
 use petweave_core::Pet;
 
-use crate::runtime::builtin::{BongoPet, DemoPet, SpritePet};
+use crate::runtime::builtin::{BongoPet, DemoPet, LuaPet, SpritePet};
 
 /// Collection of running pet instances.
 ///
@@ -49,6 +49,21 @@ impl Runtime {
                         Ok(p) => Some(Box::new(p)),
                         Err(e) => {
                             tracing::error!("failed to load sprite pet: {e}");
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!("failed to load package: {e}");
+                        None
+                    }
+                },
+                "lua" => match crate::package::resolve(&pet_cfg.package)
+                    .and_then(|dir| crate::package::read_manifest(&dir).map(|m| (m, dir)))
+                {
+                    Ok((manifest, dir)) => match LuaPet::new(&manifest, &dir) {
+                        Ok(p) => Some(Box::new(p)),
+                        Err(e) => {
+                            tracing::error!("failed to load lua pet: {e}");
                             None
                         }
                     },

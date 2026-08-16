@@ -68,7 +68,7 @@ pub struct PetConfig {
     pub name: String,
     /// Whether the pet is loaded.
     pub enabled: bool,
-    /// Pet kind: "demo" | "bongo" | "sprite" (installed role package).
+    /// Pet kind: "demo" | "bongo" | "sprite" | "lua" (role packages).
     pub kind: String,
     /// Installed package name or path for `kind = "sprite"`.
     pub package: String,
@@ -217,17 +217,18 @@ impl Config {
             }
         }
         match self.pet.kind.as_str() {
-            "demo" | "bongo" | "sprite" => {}
+            "demo" | "bongo" | "sprite" | "lua" => {}
             other => {
                 return Err(Error::Config(format!(
-                    "pet.kind must be one of demo|bongo|sprite, got {other:?}"
+                    "pet.kind must be one of demo|bongo|sprite|lua, got {other:?}"
                 )));
             }
         }
-        if self.pet.kind == "sprite" && self.pet.package.is_empty() {
-            return Err(Error::Config(
-                "pet.kind = \"sprite\" requires pet.package (installed name or path)".into(),
-            ));
+        if matches!(self.pet.kind.as_str(), "sprite" | "lua") && self.pet.package.is_empty() {
+            return Err(Error::Config(format!(
+                "pet.kind = {:?} requires pet.package (installed name or path)",
+                self.pet.kind
+            )));
         }
         if !(10..=500).contains(&self.pet.bongo.cat_height) {
             return Err(Error::Config("pet.bongo.cat_height must be in 10..=500".into()));

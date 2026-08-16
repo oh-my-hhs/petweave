@@ -22,6 +22,7 @@ use petweave_core::events::Event;
 use petweave_core::pet::{Pet, PetId};
 use petweave_core::render::Frame;
 
+use crate::graphics::svg_to_frame;
 use crate::runtime::paws::{Paw, paw_for_keycode};
 
 use image::imageops::FilterType;
@@ -30,6 +31,7 @@ const PNG_BOTH_UP: &str = "bongo-cat-both-up.png";
 const PNG_LEFT_DOWN: &str = "bongo-cat-left-down.png";
 const PNG_RIGHT_DOWN: &str = "bongo-cat-right-down.png";
 const PNG_BOTH_DOWN: &str = "bongo-cat-both-down.png";
+const SVG_SLEEPING: &str = "bongo-sleeping.svg";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FrameId {
@@ -108,9 +110,10 @@ impl BongoPet {
         let left_down = scale(load_png(dir.join(PNG_LEFT_DOWN))?, width, height)?;
         let right_down = scale(load_png(dir.join(PNG_RIGHT_DOWN))?, width, height)?;
         let both_down = scale(load_png(dir.join(PNG_BOTH_DOWN))?, width, height)?;
-        // Sleeping frame is synthesized from the idle frame (dimmed) until
-        // the SVG sleeping artwork can be rasterized (docs/LIVE2D.md).
-        let sleeping = make_sleeping_frame(&both_up);
+        // Sleeping frame: rasterize the SVG artwork when available, else fall
+        // back to a dimmed idle frame.
+        let sleeping = load_sleeping_frame(&dir, width, height)
+            .unwrap_or_else(|| make_sleeping_frame(&both_up));
 
         let mut frames = [both_up, left_down, right_down, both_down, sleeping];
         if b.mirror_x {
@@ -161,7 +164,20 @@ impl BongoPet {
     }
 }
 
-/// Dim the idle frame to suggest a sleeping cat (placeholder artwork).
+/// Rasterize the sleeping SVG at the cat size (see `graphics::svg_to_frame`).
+fn load_sleeping_frame(dir: &PathBuf, width: u32, height: u32) -> Option<Frame> {
+    let path = dir.join(SVG_SLEEPING);
+    let bytes = std::fs::read(&path).ok()?;
+    let frame = svg_to_frame(&bytes, width, height)?;
+    if frame.pixels.iter().step_by(4).any(|&a| a > 0) {
+        tracing::debug!("rasterized {}", path.display());
+        Some(frame)
+    } else {
+        None // fully transparent render — fall back to the placeholder
+    }
+}
+
+/// Dim the idle frame to suggest a sleeping cat (fallback placeholder).
 fn make_sleeping_frame(idle: &Frame) -> Frame {
     let mut f = idle.clone();
     for px in f.pixels.chunks_exact_mut(4) {
@@ -443,17 +459,17 @@ mod tests {
     }
 
     #[test]
-    fn sleeping_frame_is_dimmer_than_idle() {
+    fn sleeping_frame_has_content_and_differs_from_idle() {
         let pet = test_pet();
         let idle = &pet.frames[FrameId::BothUp as usize];
         let sleeping = &pet.frames[FrameId::Sleeping as usize];
-        let sum = |f: &Frame| -> u32 {
-            f.pixels
-                .chunks_exact(4)
-                .map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
-                .sum()
-        };
-        assert!(sum(sleeping) < sum(idle), "sleeping frame must be dimmer");
+        assert_ne!(sleeping.pixels, idle.pixels);
+        let opaque = sleeping
+            .pixels
+            .chunks_exact(4)
+            .filter(|p| p[3] > 0)
+            .count();
+        assert!(opaque > 100, "sleeping frame has content ({opaque} px)");
     }
 
     #[test]

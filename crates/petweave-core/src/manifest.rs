@@ -31,11 +31,13 @@ pub struct Meta {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct PetDecl {
-    /// Pet runtime kind: "sprite" (Lua/Live2D later).
+    /// Pet runtime kind: "sprite" | "lua" (Live2D later).
     pub kind: String,
     /// Optional surface size override (default: animation cell size).
     pub surface_width: Option<u32>,
     pub surface_height: Option<u32>,
+    /// Lua entry script (kind = "lua"); default "main.lua".
+    pub script: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +100,7 @@ impl Default for PetDecl {
             kind: "sprite".to_string(),
             surface_width: None,
             surface_height: None,
+            script: "main.lua".to_string(),
         }
     }
 }
@@ -133,11 +136,14 @@ impl Manifest {
                 self.meta.name
             )));
         }
-        if self.pet.kind != "sprite" {
+        if !matches!(self.pet.kind.as_str(), "sprite" | "lua") {
             return Err(Error::Config(format!(
-                "pet.kind must be \"sprite\" for now, got {:?}",
+                "pet.kind must be \"sprite\" or \"lua\" for now, got {:?}",
                 self.pet.kind
             )));
+        }
+        if self.pet.kind == "lua" && self.pet.script.is_empty() {
+            return Err(Error::Config("pet.script is required for kind = \"lua\"".into()));
         }
         for (id, anim) in &self.animations {
             if anim.sheet.is_empty() {

@@ -26,6 +26,11 @@ libc.workspace = true
 sysinfo.workspace = true
 zip.workspace = true
 walkdir.workspace = true
+mlua.workspace = true
+resvg.workspace = true
+ab_glyph.workspace = true
+tiny-skia.workspace = true
+ksni = "0.3.6"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [dev-dependencies]

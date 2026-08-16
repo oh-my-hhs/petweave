@@ -1,7 +1,7 @@
 # 角色包制作教程（M2）
 
 > PetWeave 的差异化核心：**做一个桌宠 = 写一个角色包**，不需要碰 Wayland/输入/渲染。
-> 当前支持**声明式精灵宠物**（零代码）；Lua 脚本运行时因离线环境无法拉取 `mlua` 依赖，暂缓（见文末）。
+> 支持两种宠物类型：**声明式精灵宠物**（零代码）与 **Lua 脚本宠物**（mlua 沙箱）。
 
 ## 包格式 `.petweave`
 
@@ -77,14 +77,59 @@ petweave package my-pet/ -o my-pet.petweave   # 生成 zip 包
 petweave import oneko.xpm -o oneko.png        # XPM(Oneko) 精灵表 → PNG
 ```
 
+## 4. Lua 脚本宠物（`kind = "lua"`）
+
+声明式宠物之外的进阶玩法：`main.lua` 脚本驱动动画与交互，运行在 **mlua 沙箱**里
+（仅暴露白名单 API，无 `io`/`os`/`package`/`debug`；指令数预算防止死循环，脚本
+报错只记日志、不会拖垮宿主）。
+
+```toml
+[pet]
+kind = "lua"
+script = "main.lua"      # 默认 main.lua
+surface_width = 64
+surface_height = 64
+```
+
+```lua
+-- main.lua
+function init()                      -- 加载时调用一次
+    pet.speak("hi! press keys")      -- 显示 4 秒气泡
+end
+
+function on_key(code, pressed)       -- 全局键盘（EV_KEY 码）
+    if pressed then pet.play("flash") end
+end
+
+function on_tick(dt) end             -- 动画时钟（秒）
+function on_system(cpu, mem) end     -- CPU/内存百分比
+function on_fullscreen(active) end
+```
+
+**脚本 API**：
+
+| API | 说明 |
+|---|---|
+| `pet.play(id)` | 播放一个动画（`pet.toml` 中声明的 id）；返回是否切换 |
+| `pet.animations()` | 所有动画 id 列表 |
+| `pet.current()` | 当前动画 id |
+| `pet.speak(text)` | 显示一段时间的文字气泡（气泡 + 系统字体文本渲染） |
+| `sys.cpu()` / `sys.mem()` | 最近一次系统采样（百分比） |
+| `sys.focus()` | 当前窗口（预留，暂返回空） |
+
+安全边界：`init`/各事件回调各自有 200 万条指令预算；`io.open` 等被禁用
+（沙箱测试覆盖）。
+
 ## 仓库内示例
 
 - `packages/bongo-sprite/` — 用声明式包复刻 BongoCat 爪击（大图缩放 + 左右爪反应），格式的"吃狗粮"验证
 - `packages/blinky/` — 最小 2×2 网格示例（Codex 风格网格 + idle 循环 + 按键反应）
+- `packages/lua-demo/` — Lua 脚本示例（按键说话 + 动画切换）
 
 ## 状态与下一步
 
 - ✅ `.petweave` 格式 + 清单校验 + 安装/卸载/列表/打包 CLI + XPM 导入
 - ✅ 声明式精灵宠物运行时（网格切帧、循环/一次性动画、左右爪反应、表面缩放）
-- ⏳ Lua 脚本运行时：**离线环境缓存中没有 `mlua`**，联网后可加入（事件/动作 API 已在 `docs/TECH_STACK.md` §4.4 设计）
+- ✅ Lua 脚本运行时（mlua 沙箱：白名单 API、指令预算、事件 on_key/on_tick/on_system/on_fullscreen、动作 play/speak、查询 sys.*）
+- ✅ SVG 渲染（resvg）：BongoCat 睡眠帧已用官方 SVG 素材栅格化，替代占位帧
 - ⏳ 签名与社区商店：包格式预留 `signature` 位置，随社区工具落地

@@ -14,8 +14,7 @@ use petweave_core::manifest::{Manifest, clamp_fps};
 use petweave_core::pet::{Pet, PetId};
 use petweave_core::render::Frame;
 
-use image::imageops::FilterType;
-
+use crate::graphics::scale_frame;
 use crate::runtime::paws::{Paw, paw_for_keycode};
 
 pub struct SpritePet {
@@ -159,6 +158,24 @@ impl SpritePet {
 
     fn target_for(&self, paw: Paw) -> Option<String> {
         self.reaction_for(paw).map(str::to_string)
+    }
+
+    /// Switch to `id`, resetting playback; returns true if changed.
+    pub fn play_animation(&mut self, id: &str) -> bool {
+        if !self.animations.contains_key(id) {
+            return false;
+        }
+        self.play(id.to_string())
+    }
+
+    /// Id of the currently playing animation.
+    pub fn current_id(&self) -> &str {
+        &self.current
+    }
+
+    /// Names of all animations (for scripting).
+    pub fn animation_ids(&self) -> Vec<String> {
+        self.animations.keys().cloned().collect()
     }
 
     /// Switch to `id`, resetting playback; returns true if changed.
@@ -308,27 +325,6 @@ fn normalize_transparent(frame: &mut Frame) {
             px[1] = 0;
             px[2] = 0;
         }
-    }
-}
-
-/// Resize a frame to `w x h` (Triangle filter) and re-normalize alpha.
-fn scale_frame(frame: &Frame, w: u32, h: u32) -> Frame {
-    let Some(buf) = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
-    else {
-        return frame.clone();
-    };
-    let mut resized = image::imageops::resize(&buf, w, h, FilterType::Triangle);
-    for px in resized.pixels_mut() {
-        if px[3] == 0 {
-            px[0] = 0;
-            px[1] = 0;
-            px[2] = 0;
-        }
-    }
-    Frame {
-        width: w,
-        height: h,
-        pixels: resized.into_raw(),
     }
 }
 
@@ -535,6 +531,7 @@ mod tests {
             pet: PetDecl {
                 surface_width: Some(264),
                 surface_height: Some(110),
+                script: "main.lua".into(),
                 ..PetDecl::default()
             },
             animations,

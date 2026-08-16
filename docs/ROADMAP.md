@@ -9,7 +9,7 @@
 |---|---|---|
 | M0 项目骨架 | ✅ 完成 | 编译通过、单测通过、niri 上实测可显示 |
 | M1 BongoCat 移植 | ✅ 完成 | 爪击动画/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
-| M2 SDK / 角色包 | 🔄 进行中 | 包格式/声明式精灵宠物/CLI/示例包已完成；Lua 运行时受阻于离线依赖 |
+| M2 SDK / 角色包 | ✅ 完成 | 包格式/声明式精灵宠物/Lua 沙箱运行时/CLI/示例包/SVG 渲染 |
 | M3 交互升级 | ⏳ 未开始 | |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
@@ -65,10 +65,15 @@
       `idle`/`key-left`/`key-right`/`key-both` 事件接线、大图缩放到表面尺寸
 - [x] 包管理 CLI：`install`（目录或 zip）、`uninstall`、`list`、`package`（打包）、
       `import`（Oneko XPM → PNG）；仓库位于 `$XDG_DATA_HOME/petweave/pets/`
-- [x] 预置示例包：`packages/bongo-sprite`（声明式 BongoCat 吃狗粮）、`packages/blinky`（网格示例）
+- [x] 预置示例包：`packages/bongo-sprite`（声明式 BongoCat 吃狗粮）、`packages/blinky`（网格示例）、
+      `packages/lua-demo`（Lua 脚本示例）
 - [x] 教程文档 `docs/PACKAGES.md`
-- [ ] Lua 脚本运行时（mlua 沙箱）—— **受阻**：离线缓存无 `mlua`，联网后实现
-- [ ] Lua API v1（事件/动作/查询）—— 随 Lua 运行时
+- [x] Lua 脚本运行时：mlua（vendored Lua 5.4）沙箱 —— 白名单环境（无 io/os/package/debug）、
+      指令预算钩子防死循环、错误吞掉不拖垮宿主
+- [x] Lua API v1：事件 `on_key/on_tick/on_system/on_fullscreen/init`；动作 `pet.play/pet.speak`
+      （气泡 + 系统字体文本渲染）/`pet.animations`/`pet.current`；查询 `sys.cpu/sys.mem/sys.focus`
+- [x] SVG 渲染（resvg）：BongoCat 睡眠帧改用官方 SVG 素材栅格化（`graphics::svg_to_frame`），
+      替代调暗占位帧
 - [ ] 签名与社区商店—— 包格式预留 `signature` 位置
 
 ## M3 交互升级

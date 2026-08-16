@@ -11,7 +11,12 @@ use calloop_wayland_source::WaylandSource;
 use petweave_core::render::Frame;
 use petweave_core::{Config, Event};
 
-use smithay_client_toolkit::reexports::client::protocol::wl_output::WlOutput;
+use smithay_client_toolkit::reexports::client::protocol::{wl_output::WlOutput, wl_pointer, wl_seat};
+use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
+use smithay_client_toolkit::seat::pointer::{
+    PointerEvent as SctkPointerEvent, PointerEventKind, PointerHandler,
+};
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 
 use crate::cli::Cli;
 use crate::platform::config_watcher::ConfigWatcher;
@@ -33,6 +38,74 @@ pub enum HostCommand {
     Quit,
 }
 
+/// An in-progress pointer drag of the pet surface.
+struct Drag {
+    /// Pointer position (surface-local) where the press happened.
+    start_x: f64,
+    start_y: f64,
+    /// Surface top-left (output-logical) at press time.
+    base_x: f64,
+    base_y: f64,
+    /// Whether the pointer moved enough to count as a drag (vs a click).
+    moved: bool,
+}
+
+/// Free-position physics: gravity + floor/wall collisions with bounce decay.
+struct Physics {
+    x: f64,
+    y: f64,
+    vx: f64,
+    vy: f64,
+    w: f64,
+    h: f64,
+    /// Settled on the floor (no more movement).
+    resting: bool,
+}
+
+const GRAVITY: f64 = 1400.0;
+const BOUNCE: f64 = 0.45;
+const FRICTION: f64 = 0.995;
+const REST_EPS: f64 = 2.0;
+
+impl Physics {
+    /// Advance one step; returns true while still moving (needs redraw).
+    fn step(&mut self, dt: f64, out_w: f64, out_h: f64) -> bool {
+        if self.resting {
+            return false;
+        }
+        self.vy += GRAVITY * dt;
+        self.vx *= FRICTION;
+        if self.vx.abs() < 1.0 {
+            self.vx = 0.0;
+        }
+        self.x += self.vx * dt;
+        self.y += self.vy * dt;
+        let max_x = (out_w - self.w).max(0.0);
+        let max_y = (out_h - self.h).max(0.0);
+        if self.x <= 0.0 {
+            self.x = 0.0;
+            self.vx = -self.vx * BOUNCE;
+        } else if self.x >= max_x {
+            self.x = max_x;
+            self.vx = -self.vx * BOUNCE;
+        }
+        if self.y >= max_y {
+            self.y = max_y;
+            // Low-speed impacts stick instead of bouncing forever: with
+            // discrete steps the minimum impact speed is g*dt, so compare
+            // the post-bounce speed against what gravity adds per step.
+            if self.vy.abs() < REST_EPS || self.vy.abs() * BOUNCE < GRAVITY * dt {
+                self.vy = 0.0;
+                self.vx = 0.0;
+                self.resting = true;
+                return false;
+            }
+            self.vy = -self.vy * BOUNCE;
+        }
+        true
+    }
+}
+
 /// Top-level host state. Also the `Data` type for every sctk/calloop handler.
 pub struct App {
     pub config: Config,
@@ -49,6 +122,15 @@ pub struct App {
     pub tray_shared: Option<std::sync::Arc<std::sync::Mutex<TrayShared>>>,
     /// Tray service handle (kept alive; refreshed on visibility changes).
     pub tray_handle: Option<ksni::blocking::Handle<PetTray>>,
+    pub pointer: Option<wl_pointer::WlPointer>,
+    /// Active drag (pointer press on the pet surface).
+    drag: Option<Drag>,
+    /// Gravity/collision state after the pet was dragged (free positioning).
+    physics: Option<Physics>,
+    /// Position to apply at the next loop iteration (drag or physics).
+    pending_position: Option<(f64, f64)>,
+    /// Timestamp of the previous loop iteration (physics dt).
+    last_loop: Instant,
     /// Cached transparent frame used to blank the surface while hidden.
     blank: Option<Frame>,
     /// Set when a redraw is wanted (input events, layer configure, …).
@@ -152,6 +234,175 @@ impl App {
         self.config = cfg;
         self.needs_redraw = true;
     }
+
+    /// Convert an sctk pointer event into a pet event + drag update.
+    fn handle_pointer_event(&mut self, ev: &SctkPointerEvent) {
+        use petweave_core::events::PointerEvent;
+        // Only events on our own layer surface matter.
+        if ev.surface != self.wayland.surface {
+            return;
+        }
+        let (x, y) = ev.position;
+        let mut pet_ev = PointerEvent {
+            x,
+            y,
+            button: 0,
+            pressed: false,
+            inside: true,
+        };
+        match &ev.kind {
+            PointerEventKind::Leave { .. } => {
+                pet_ev.inside = false;
+                self.drag = None;
+            }
+            PointerEventKind::Press { button, .. } => {
+                pet_ev.button = *button;
+                pet_ev.pressed = true;
+                if *button == 272 {
+                    // Left button: start a potential drag from the current spot.
+                    let (w, h) = self.current_surface_size();
+                    let (bx, by) = self.wayland.surface_position(w, h);
+                    self.drag = Some(Drag {
+                        start_x: x,
+                        start_y: y,
+                        base_x: bx,
+                        base_y: by,
+                        moved: false,
+                    });
+                    // Pause physics while dragging.
+                    self.physics = None;
+                    self.wayland.set_free_position(bx, by);
+                }
+            }
+            PointerEventKind::Release { button, .. } => {
+                pet_ev.button = *button;
+                pet_ev.pressed = false;
+                if *button == 272 {
+                    if let Some(drag) = self.drag.take() {
+                        // A real drag (not a click) drops the pet into physics.
+                        if drag.moved && self.config.render.physics {
+                            let (w, h) = self.current_surface_size();
+                            self.physics = Some(Physics {
+                                x: drag.base_x + (x - drag.start_x),
+                                y: drag.base_y + (y - drag.start_y),
+                                vx: 0.0,
+                                vy: 0.0,
+                                w,
+                                h,
+                                resting: false,
+                            });
+                            self.pending_position = Some((self.physics.as_ref().unwrap().x, self.physics.as_ref().unwrap().y));
+                        }
+                    }
+                }
+            }
+            PointerEventKind::Motion { .. } => {
+                if let Some(drag) = &mut self.drag {
+                    let nx = drag.base_x + (x - drag.start_x);
+                    let ny = drag.base_y + (y - drag.start_y);
+                    if (nx - drag.base_x).abs() > 4.0 || (ny - drag.base_y).abs() > 4.0 {
+                        drag.moved = true;
+                    }
+                    self.pending_position = Some((nx, ny));
+                }
+            }
+            _ => {}
+        }
+        if self.runtime.on_event(Event::Pointer(pet_ev)) {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Current pet surface size in logical pixels (f64 for math).
+    fn current_surface_size(&self) -> (f64, f64) {
+        (self.wayland.width as f64, self.wayland.height as f64)
+    }
+
+    /// Advance physics if active; returns true while the pet is moving.
+    fn physics_step(&mut self, dt: f32) -> bool {
+        let Some(p) = &mut self.physics else {
+            return false;
+        };
+        let Some((out_w, out_h)) = self.wayland.output_logical_size() else {
+            p.resting = true;
+            return false;
+        };
+        let moving = p.step(dt as f64, out_w, out_h);
+        self.pending_position = Some((p.x, p.y));
+        moving
+    }
+
+    /// Apply the pending drag/physics position to the layer surface.
+    fn apply_position(&mut self) {
+        if let Some((x, y)) = self.pending_position.take() {
+            self.wayland.set_margins(y, x);
+        }
+    }
+
+    /// Earliest instant physics needs a step, if the pet is moving.
+    fn physics_deadline(&self) -> Option<Instant> {
+        let p = self.physics.as_ref()?;
+        if p.resting {
+            return None;
+        }
+        Some(Instant::now() + std::time::Duration::from_millis(16))
+    }
+}
+
+
+impl SeatHandler for App {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.wayland.seat_state
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seat_state().get_pointer(qh, &seat) {
+                Ok(p) => {
+                    tracing::debug!("pointer capability acquired");
+                    self.pointer = Some(p);
+                }
+                Err(e) => tracing::warn!("cannot create pointer: {e}"),
+            }
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer && self.pointer.is_some() {
+            self.pointer = None;
+            self.drag = None;
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for App {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[SctkPointerEvent],
+    ) {
+        for ev in events {
+            self.handle_pointer_event(&ev);
+        }
+    }
 }
 
 impl FullscreenHandler for App {
@@ -190,6 +441,11 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         visible: true,
         tray_shared: None,
         tray_handle: None,
+        pointer: None,
+        drag: None,
+        physics: None,
+        pending_position: None,
+        last_loop: Instant::now(),
         blank: None,
         needs_redraw: false,
         exit: false,
@@ -298,11 +554,14 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
     );
 
     while !app.exit {
-        // Sleep until the next pet deadline (paw-hold expiry, …); None = block
+        // Sleep until the next pet deadline or physics step; None = block
         // until an event arrives (input, signal, wayland).
         let timeout = app
             .runtime
             .next_deadline()
+            .into_iter()
+            .chain(app.physics_deadline())
+            .min()
             .map(|d| d.saturating_duration_since(Instant::now()));
         event_loop
             .dispatch(timeout, &mut app)
@@ -310,9 +569,13 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         if app.exit {
             break;
         }
-        if app.runtime.tick_all() {
+        let now = Instant::now();
+        let dt = now.duration_since(app.last_loop).as_secs_f32().min(0.05);
+        app.last_loop = now;
+        if app.runtime.tick_all() || app.physics_step(dt) {
             app.needs_redraw = true;
         }
+        app.apply_position();
         if app.needs_redraw {
             app.needs_redraw = false;
             if let Err(e) = app.draw() {
@@ -323,6 +586,60 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
 
     tracing::info!("shutting down");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_physics(x: f64, y: f64) -> Physics {
+        Physics {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            w: 100.0,
+            h: 50.0,
+            resting: false,
+        }
+    }
+
+    #[test]
+    fn gravity_drops_and_floor_bounces() {
+        let mut p = make_physics(0.0, 0.0);
+        // Bounds: 800x600 -> floor at y = 550.
+        let mut moving = true;
+        let mut frames = 0;
+        while moving && frames < 2000 {
+            moving = p.step(1.0 / 60.0, 800.0, 600.0);
+            frames += 1;
+        }
+        assert!(p.resting, "pet settles on the floor");
+        assert!((p.y - 550.0).abs() < 1.0, "on the floor, got {}", p.y);
+        assert!(p.y >= 0.0 && p.x >= 0.0);
+    }
+
+    #[test]
+    fn walls_bounce_and_velocity_decays() {
+        let mut p = make_physics(790.0, 540.0);
+        p.vx = -300.0; // moving left into the wall region
+        let mut frames = 0;
+        while !p.resting && frames < 2000 {
+            p.step(1.0 / 60.0, 800.0, 600.0);
+            frames += 1;
+        }
+        assert!(p.resting);
+        assert!(p.x >= 0.0 && p.x <= 700.0, "within bounds, got x={}", p.x);
+        assert!((p.y - 550.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn resting_pet_stays_put() {
+        let mut p = make_physics(10.0, 550.0);
+        p.resting = true;
+        assert!(!p.step(1.0 / 60.0, 800.0, 600.0));
+        assert_eq!((p.x, p.y), (10.0, 550.0));
+    }
 }
 
 /// Spawn the StatusNotifierItem tray with the pet rendered as its icon.

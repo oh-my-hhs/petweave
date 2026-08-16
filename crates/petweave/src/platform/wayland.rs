@@ -18,6 +18,7 @@ use petweave_core::render::Frame;
 
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, EventQueue, QueueHandle};
@@ -30,12 +31,12 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
-    registry_handlers,
+    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, registry_handlers,
 };
 
 use crate::app::App;
-use crate::graphics::blit_rgba_to_bgra;
+use crate::graphics::{alpha_bbox, blit_rgba_to_bgra};
 use crate::platform::fullscreen::FullscreenTracker;
 
 /// Wayland state owned by the host (`App.wayland`).
@@ -57,12 +58,22 @@ pub struct WaylandState {
     pub layer_shell: LayerShell,
     pub registry_state: RegistryState,
     pub output_state: OutputState,
+    pub seat_state: SeatState,
     pub surface: wl_surface::WlSurface,
     /// Reserved for M1 (drag, click-through region updates).
     #[allow(dead_code)]
     pub layer: LayerSurface,
     /// Output the surface is bound to (xdg-output by name), if any.
     pub bound_output: Option<wl_output::WlOutput>,
+    /// Current layer anchor (mirrors config until a drag switches to free).
+    pub anchor: Anchor,
+    /// Current margins (top, right, bottom, left) — layer surfaces don't
+    /// expose an accessor, so we mirror what we set.
+    pub margins: (i32, i32, i32, i32),
+    /// Restrict input to the pet's opaque shape (click-through).
+    pub click_through: bool,
+    /// Last input-region bbox we applied (change detection).
+    input_bbox: Option<(i32, i32, u32, u32)>,
     /// Integer buffer scale for HiDPI (from scale_factor_changed).
     pub scale: i32,
     /// SHM pool holding the double buffer (sized at physical pixels).
@@ -96,6 +107,7 @@ impl WaylandState {
         )?;
         let registry_state = RegistryState::new(&globals);
         let output_state = OutputState::new(&globals, &qh);
+        let seat_state = SeatState::new(&globals, &qh);
 
         let surface = compositor.create_surface(&qh);
         let layer = layer_shell.create_layer_surface(
@@ -116,9 +128,19 @@ impl WaylandState {
                 layer_shell,
                 registry_state,
                 output_state,
+                seat_state,
                 surface,
                 layer,
                 bound_output: None,
+                anchor: parse_anchor(&render.anchor)?,
+                margins: (
+                    render.margin_top,
+                    render.margin_right,
+                    render.margin_bottom,
+                    render.margin_left,
+                ),
+                click_through: render.click_through,
+                input_bbox: None,
                 scale: 1,
                 pool: None,
                 buffers: [None, None],
@@ -156,6 +178,13 @@ impl WaylandState {
         self.configured = false;
         self.width = render.width;
         self.height = render.height;
+        self.anchor = parse_anchor(&render.anchor)?;
+        self.margins = (
+            render.margin_top,
+            render.margin_right,
+            render.margin_bottom,
+            render.margin_left,
+        );
         tracing::info!("layer surface bound to output: {}", output.map(|_| "named").unwrap_or("auto"));
         Ok(())
     }
@@ -165,12 +194,20 @@ impl WaylandState {
         Self::apply_props(&self.layer, render)?;
         self.width = render.width;
         self.height = render.height;
+        self.anchor = parse_anchor(&render.anchor)?;
+        self.margins = (
+            render.margin_top,
+            render.margin_right,
+            render.margin_bottom,
+            render.margin_left,
+        );
         Ok(())
     }
 
     fn apply_props(layer: &LayerSurface, render: &RenderConfig) -> Result<()> {
         layer.set_layer(parse_layer(&render.layer)?);
         layer.set_anchor(parse_anchor(&render.anchor)?);
+
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_margin(
             render.margin_top,
@@ -237,7 +274,90 @@ impl WaylandState {
         self.surface.damage_buffer(0, 0, w, h);
         self.surface.commit();
         self.conn.flush().context("failed to flush Wayland connection")?;
+        self.update_input_region(frame);
         Ok(())
+    }
+
+    /// Keep the input region glued to the pet's opaque shape when
+    /// click-through is enabled (transparent areas pass clicks to windows
+    /// below). A fully transparent frame clears the region entirely.
+    pub fn update_input_region(&mut self, frame: &Frame) {
+        let bbox = if self.click_through {
+            alpha_bbox(frame, 8)
+        } else {
+            Some((0, 0, frame.width, frame.height))
+        };
+        if bbox == self.input_bbox {
+            return;
+        }
+        self.input_bbox = bbox;
+        let region = match smithay_client_toolkit::compositor::Region::new(&self.compositor) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("cannot create input region: {e}");
+                return;
+            }
+        };
+        if let Some((x, y, w, h)) = bbox {
+            region.add(x, y, w as i32, h as i32);
+        }
+        self.surface.set_input_region(Some(region.wl_region()));
+        tracing::debug!("input region updated: {bbox:?}");
+    }
+
+    /// Logical size of the output the surface is on (or the first output).
+    pub fn output_logical_size(&self) -> Option<(f64, f64)> {
+        let outputs: Vec<_> = self.output_state.outputs().collect();
+        let output = self
+            .bound_output
+            .as_ref()
+            .or_else(|| outputs.first())?;
+        let info = self.output_state.info(output)?;
+        info.logical_size
+            .map(|(w, h)| (w as f64, h as f64))
+            .or_else(|| {
+                Some((
+                    info.physical_size.0 as f64 / info.scale_factor.max(1) as f64,
+                    info.physical_size.1 as f64 / info.scale_factor.max(1) as f64,
+                ))
+            })
+    }
+
+    /// Surface top-left corner in output-logical coordinates for the current
+    /// anchor + margins (drag start base; also how free positioning starts).
+    pub fn surface_position(&self, w: f64, h: f64) -> (f64, f64) {
+        let (out_w, out_h) = self.output_logical_size().unwrap_or((1920.0, 1080.0));
+        let m = self.margins;
+        let x = if self.anchor.contains(Anchor::LEFT) {
+            m.3 as f64
+        } else if self.anchor.contains(Anchor::RIGHT) {
+            out_w - m.1 as f64 - w
+        } else {
+            (out_w - w) / 2.0
+        };
+        let y = if self.anchor.contains(Anchor::TOP) {
+            m.0 as f64
+        } else if self.anchor.contains(Anchor::BOTTOM) {
+            out_h - m.2 as f64 - h
+        } else {
+            (out_h - h) / 2.0
+        };
+        (x, y)
+    }
+
+    /// Switch to free positioning (anchor top|left) at `(x, y)` and commit.
+    pub fn set_free_position(&mut self, x: f64, y: f64) {
+        self.anchor = Anchor::TOP | Anchor::LEFT;
+        self.set_margins(y, x);
+    }
+
+    /// Set top/left margins only (free positioning) and commit.
+    pub fn set_margins(&mut self, top: f64, left: f64) {
+        let top = top.round() as i32;
+        let left = left.round() as i32;
+        self.margins = (top, 0, 0, left);
+        self.layer.set_margin(top, 0, 0, left);
+        self.layer.commit();
     }
 
     /// Change the requested layer-surface size (double-buffered property;
@@ -442,13 +562,15 @@ impl ProvidesRegistryState for App {
     // Multi-instance globals (outputs) plus the foreign-toplevel manager
     // (fullscreen auto-hide) are handled at runtime; compositor/shm/
     // layer-shell are bound once at connect time.
-    registry_handlers![OutputState, FullscreenTracker];
+    registry_handlers![OutputState, FullscreenTracker, SeatState];
 }
 
 delegate_compositor!(App);
 delegate_shm!(App);
 delegate_layer!(App);
 delegate_output!(App);
+delegate_seat!(App);
+delegate_pointer!(App);
 delegate_registry!(App);
 
 #[cfg(test)]

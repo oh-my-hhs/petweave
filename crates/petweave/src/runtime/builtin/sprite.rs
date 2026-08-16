@@ -24,6 +24,7 @@ pub struct SpritePet {
     key_left: Option<String>,
     key_right: Option<String>,
     key_both: Option<String>,
+    click: Option<String>,
     current: String,
     frame_idx: usize,
     acc: f32,
@@ -125,6 +126,7 @@ impl SpritePet {
             key_left: manifest.reactions.key_left.clone(),
             key_right: manifest.reactions.key_right.clone(),
             key_both: manifest.reactions.key_both.clone(),
+            click: manifest.reactions.click.clone(),
             current,
             frame_idx: 0,
             acc: 0.0,
@@ -223,6 +225,12 @@ impl Pet for SpritePet {
                 } else {
                     false
                 }
+            }
+            Event::Pointer(ev) if ev.pressed && ev.button == 272 && self.click.is_some() => {
+                let reaction = self.click.clone().unwrap();
+                self.left_until = Some(Instant::now() + self.reaction_duration(&reaction));
+                self.right_until = self.left_until;
+                true
             }
             _ => false,
         }

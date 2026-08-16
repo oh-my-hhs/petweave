@@ -42,6 +42,12 @@ margin_left = 0
 output = ""
 # Never auto-hide the pet for fullscreen windows.
 disable_fullscreen_hide = false
+# Click-through: only the pet's opaque shape receives clicks (transparent
+# areas pass through to windows below). false = whole surface interactive.
+click_through = true
+# Gravity/collision physics after the pet is dragged (M3). false = the pet
+# stays where you drop it.
+physics = true
 
 [pet]
 # Pet instance name (used in ids and logs).

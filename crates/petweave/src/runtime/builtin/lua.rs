@@ -144,6 +144,17 @@ impl Pet for LuaPet {
                     MultiValue::from_vec(vec![Value::Boolean(*active)]),
                 );
             }
+            Event::Pointer(ev) => {
+                self.dispatch(
+                    "on_pointer",
+                    MultiValue::from_vec(vec![
+                        Value::Number(ev.x),
+                        Value::Number(ev.y),
+                        Value::Boolean(ev.pressed),
+                        Value::Integer(ev.button as i64),
+                    ]),
+                );
+            }
             Event::Tick { .. } => {}
         }
         self.sprite.lock().unwrap().on_event(event)

@@ -149,6 +149,7 @@ petweave install my-pet.petweave              # 从包文件重装（验证包�
 | `idle` | 无反应时的循环动画 |
 | `key-left` / `key-right` | 左/右半键盘按键时播放（一次性） |
 | `key-both` | 双手同按时播放 |
+| `click` | 左键点击宠物时播放（一次性） |
 
 校验规则：名字非法、格子不能整除、`frames` 越界、`reactions` 引用不存在的动画 → 加载报错并给出明确信息。
 
@@ -197,6 +198,12 @@ end
 function on_fullscreen(active)
     if active then pet.speak("fullscreen!") end
 end
+
+function on_pointer(x, y, pressed, button)
+    if pressed and button == 272 then
+        pet.speak("pet me!")
+    end
+end
 ```
 
 ### 脚本 API 一览
@@ -209,6 +216,7 @@ end
 | `pet.speak(text)` | 显示 4 秒文字气泡（气泡 + 系统字体渲染） |
 | `sys.cpu()` / `sys.mem()` | 最近一次系统采样（百分比） |
 | `sys.focus()` | 当前窗口信息（预留，暂返回空串） |
+| `on_pointer(x, y, pressed, button)` | 指针事件（悬停/移动/按下/松开，`button=272` 为左键） |
 
 ### 沙箱边界（写脚本时注意）
 

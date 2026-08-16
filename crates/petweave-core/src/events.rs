@@ -18,11 +18,28 @@ pub struct InputEvent {
     pub pressed: bool,
 }
 
+/// A pointer event on the pet's own surface (wl_seat pointer).
+#[derive(Debug, Clone)]
+pub struct PointerEvent {
+    /// Surface-local position in logical pixels.
+    pub x: f64,
+    pub y: f64,
+    /// Button that changed (0 for enter/leave/motion).
+    pub button: u32,
+    /// `true` on press, `false` on release (only for `button != 0`).
+    pub pressed: bool,
+    /// Whether the pointer is currently inside the pet surface.
+    pub inside: bool,
+}
+
 /// Every event a pet can receive.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A global keyboard key event (evdev).
     Input(InputEvent),
+
+    /// A pointer event on the pet's own surface.
+    Pointer(PointerEvent),
 
     /// Periodic animation tick (reserved; emitted by the animation loop).
     Tick { dt: f32 },

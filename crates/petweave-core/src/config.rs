@@ -61,6 +61,10 @@ pub struct RenderConfig {
     pub output: String,
     /// Never auto-hide the pet for fullscreen windows.
     pub disable_fullscreen_hide: bool,
+    /// Click-through outside the pet's opaque shape (input region = alpha bbox).
+    pub click_through: bool,
+    /// Gravity/collision physics after the pet is dragged (M3).
+    pub physics: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +153,8 @@ impl Default for RenderConfig {
             margin_left: 0,
             output: String::new(),
             disable_fullscreen_hide: false,
+            click_through: true,
+            physics: true,
         }
     }
 }

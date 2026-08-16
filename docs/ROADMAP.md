@@ -78,11 +78,11 @@
 
 ## M3 交互升级
 
-- [ ] 指针事件接入（wl_seat）：悬停/点击反应
-- [ ] 拖拽：指针按下→margin 节流移动，记录各合成器体验
-- [ ] 轻物理：重力 + 桌面边缘碰撞 + 弹性衰减（自研，不引引擎）
+- [x] 指针事件接入（wl_seat）：悬停/点击反应 → `Event::Pointer`，sprite `click` 反应 + Lua `on_pointer`
+- [x] 拖拽：按住左键移动宠物（自动切换自由定位，margin 按渲染帧提交）
+- [x] 轻物理：重力 + 屏幕边缘碰撞 + 弹性衰减 + 静止收敛（自研，`physics` 可关）
 - [ ] 多宠物共存：进程内多实例（共享 Wayland 连接与资产缓存）
-- [ ] 点击穿透：`wl_surface.set_input_region` 按宠物形状收窄
+- [x] 点击穿透：`wl_surface.set_input_region` 按 alpha 包围盒收窄（`click_through` 可关）
 - [x] 托盘图标（ksni，StatusNotifierItem：左键显隐、菜单退出，`tray_enabled` 可关）
 - [ ] 设置面板（egui，独立进程可选）
 

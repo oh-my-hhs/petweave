@@ -69,6 +69,8 @@ pub struct Reactions {
     pub key_right: Option<String>,
     /// Animation played when both hands are pressed at once.
     pub key_both: Option<String>,
+    /// Animation played once when the pet is clicked with the left button.
+    pub click: Option<String>,
 }
 
 impl Default for Manifest {
@@ -164,6 +166,7 @@ impl Manifest {
             ("reactions.key_left", &self.reactions.key_left),
             ("reactions.key_right", &self.reactions.key_right),
             ("reactions.key_both", &self.reactions.key_both),
+            ("reactions.click", &self.reactions.click),
         ] {
             if let Some(id) = id {
                 if !has(id) {

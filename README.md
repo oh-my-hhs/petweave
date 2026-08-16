@@ -24,11 +24,6 @@ cargo build --release      # 产物: target/release/petweave
 cargo test                 # 运行测试（55 项）
 ```
 
-> **离线构建（本机）**：网络不可用且系统 cargo 缓存只读时，使用仓库内的 `.cargo-home`：
-> ```bash
-> CARGO_HOME=/home/hhs/Projects/petweave/.cargo-home cargo build --offline
-> ```
-
 ### 依赖
 - Rust 1.80+（stable）
 - Wayland 合成器（支持 `wlr-layer-shell`）：niri / Hyprland / Sway / KWin(Plasma 6) 等

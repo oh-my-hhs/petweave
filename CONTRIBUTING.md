@@ -33,7 +33,7 @@ cargo build --release          # 构建
 cargo test                     # 全部测试（55 项）
 ```
 
-> 本机离线环境：`CARGO_HOME=/home/hhs/Projects/petweave/.cargo-home cargo build --offline`
+> 无网络环境：先在能联网的机器上 `cargo fetch` 一次，之后可 `cargo build --offline` 离线构建。
 
 ### 开发约定
 

@@ -31,6 +31,15 @@ pub struct Cli {
     #[arg(long)]
     pub fps: Option<u32>,
 
+    /// Pet kind: demo | bongo (overrides pet.kind from config).
+    #[arg(long)]
+    pub pet: Option<String>,
+
+    /// Render the enabled pet's current frame to a PNG and exit (debug helper,
+    /// no Wayland needed).
+    #[arg(long, value_name = "PATH")]
+    pub preview: Option<PathBuf>,
+
     /// Explicit input device path (repeatable, e.g. /dev/input/event4).
     #[arg(long = "device")]
     pub devices: Vec<String>,

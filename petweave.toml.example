@@ -34,8 +34,22 @@ margin_bottom = 16
 margin_left = 0
 
 [pet]
-# Built-in demo pet (real role packages arrive with M2).
-name = "demo"
+# Built-in pet kind: "demo" | "bongo" (role packages arrive with M2).
+name = "bongo"
 enabled = true
-# Base color as #rrggbb or #rrggbbaa. The pet flashes white on keypress.
+kind = "bongo"
+# Demo pet base color as #rrggbb or #rrggbbaa. The demo pet flashes white on
+# keypress.
 color = "#ff6699"
+
+[pet.bongo]
+# Directory holding the four bongo cat PNG frames.
+assets_dir = "assets/bongocat"
+# Target cat height in pixels; width follows the asset aspect ratio.
+cat_height = 110
+# How long a paw stays down after a key press, in ms.
+keypress_duration_ms = 100
+# Map keys to left/right paws by physical position.
+hand_mapping = true
+# Flip the cat horizontally (and swap the paw mapping).
+mirror_x = false

@@ -1,6 +1,6 @@
 //! Application state and the main event loop.
 
-use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use calloop::channel::Channel;
@@ -59,6 +59,10 @@ pub fn run(config: Config, devices: Vec<KeyboardDevice>) -> Result<()> {
         exit: false,
     };
 
+    // Let the pet pick an aspect-correct surface size (e.g. the bongo cat).
+    let (w, h) = app.runtime.surface_size();
+    app.wayland.resize(w, h);
+
     // Wayland event source (owns the EventQueue; dispatches in the loop).
     let wayland_source = WaylandSource::new(app.wayland.conn.clone(), queue);
     wayland_source
@@ -101,9 +105,21 @@ pub fn run(config: Config, devices: Vec<KeyboardDevice>) -> Result<()> {
     );
 
     while !app.exit {
+        // Sleep until the next pet deadline (paw-hold expiry, …); None = block
+        // until an event arrives (input, signal, wayland).
+        let timeout = app
+            .runtime
+            .next_deadline()
+            .map(|d| d.saturating_duration_since(Instant::now()));
         event_loop
-            .dispatch(None::<Duration>, &mut app)
+            .dispatch(timeout, &mut app)
             .context("event loop dispatch failed")?;
+        if app.exit {
+            break;
+        }
+        if app.runtime.tick_all() {
+            app.needs_redraw = true;
+        }
         if app.needs_redraw {
             app.needs_redraw = false;
             if let Err(e) = app.draw() {

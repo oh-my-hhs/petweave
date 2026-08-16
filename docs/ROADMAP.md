@@ -7,11 +7,11 @@
 
 | 里程碑 | 状态 | 说明 |
 |---|---|---|
-| M0 项目骨架 | ✅ 完成 | 编译通过、13 项单测通过、niri 上实测可显示 |
-| M1 BongoCat 移植 | 🔄 进行中 | 下一步：SVG 渲染 + 爪击动画状态机 |
+| M0 项目骨架 | ✅ 完成 | 编译通过、单测通过、niri 上实测可显示 |
+| M1 BongoCat 移植 | 🔄 进行中 | 核心动画已移植（PNG 路线，RSS 5.7MB）；热插拔/全屏隐藏/多显示器等未完成 |
 | M2 SDK / 角色包 | ⏳ 未开始 | |
 | M3 交互升级 | ⏳ 未开始 | |
-| M4 深度集成 | ⏳ 未开始 | |
+| M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
 ---
 
@@ -34,18 +34,21 @@
 
 ## M1 BongoCat 移植（目标：在 niri/Hyprland 复现 wayland-bongocat 体验）
 
-- [ ] SVG 渲染（resvg）+ 启动时预缩放帧缓存（继承 wayland-bongocat 方案）
-- [ ] BongoCat 爪击动画状态机：左右手键位映射、双爪并发、按键保持时长
-- [ ] 动画帧率控制与空闲休眠（帧回调驱动 + eventfd 式唤醒，空闲 ~0% CPU）
+- [x] 精灵渲染 + 启动时预缩放帧缓存（`image` 解码 PNG → `Frame`；SVG/resvg 路线
+      待网络可用后替换，见 `docs/LIVE2D.md`）
+- [x] BongoCat 爪击动画状态机：左右手键位映射（与 wayland-bongocat 同表）、
+      双爪并发、按键保持时长（`keypress_duration_ms`）、`mirror_x`
+- [x] 动画驱动与空闲休眠：`Pet::tick` + `next_deadline` 自适应睡眠（空闲阻塞
+      在 poll，~0% CPU）
+- [x] 资源指标基线：单宠物 RSS ≈ **5.7MB**（niri，release，264×110 surface）
 - [ ] 键盘热插拔：5s 快速重试 → 30s 周期扫描
 - [ ] 全屏自动隐藏：`wlr-foreign-toplevel-management` / `ext-foreign-toplevel-list` + KWin 兜底
 - [ ] 多显示器：`xdg-output` 按名称定位、HiDPI 逻辑/物理尺寸换算
-- [ ] 闲置/定时睡眠模式
+- [ ] 闲置/定时睡眠模式（含 sleeping 帧；PNG 资产缺该帧，等 SVG 路线）
 - [ ] 配置热重载三段式：属性级 → 缓冲区级 → 全重建
 - [ ] 系统感知：`sysinfo` CPU/内存 → `Event::System`，宠物可反应
-- [ ] `petweave doctor` 权限工具（从 M0 移入，随 M1 一并完成）
-- [ ] PID 文件单例（从 M0 移入）
-- [ ] 资源指标基线：单宠物 RSS ≤ 25MB、空闲 CPU ≈ 0、启动 < 100ms
+- [ ] `petweave doctor` 权限工具（udev uaccess 一键安装）
+- [ ] PID 文件单例 + `$XDG_RUNTIME_DIR` 安全落盘
 
 ## M2 SDK / 角色包（核心差异化：从"应用"到"平台"）
 
@@ -70,7 +73,10 @@
 ## M4 深度集成
 
 - [ ] wgpu + linux-dmabuf GPU 渲染后端（`RenderBackend` 第二实现）
-- [ ] Live2D 支持（Cubism Core Rust 绑定）+ BongoCat 模型社区兼容
+- [ ] Live2D 支持（Cubism Core Rust 绑定）+ BongoCat 模型社区兼容 ——
+      详细路线见 `docs/LIVE2D.md`（渲染地基 → 模型加载 → 动作系统 → 完整对齐）
+- [ ] 手柄/指针事件扩展（`Event::Gamepad` / `Event::Pointer`，对齐 Tauri BongoCat 输入）
+- [ ] egui 设置面板（模型管理/行为配置/快捷键）
 - [ ] 外部宠物进程协议：Unix socket JSON-RPC，任意语言可写宠物
 - [ ] 隔离沙箱：外部宠物进程 seccomp/landlock（可选）
 - [ ] AI 预留落地：`on_message/speak` 接口 + CATAI/Sakura 适配示例

@@ -147,6 +147,10 @@ impl WaylandState {
         if w <= 0 || h <= 0 {
             return Ok(());
         }
+        // Keep the surface size in sync with the frame (pet-driven sizes).
+        if self.width != frame.width || self.height != frame.height {
+            self.resize(frame.width, frame.height);
+        }
         self.ensure_pool(w, h)?;
 
         // Choose a writable slot (not in flight with the compositor).
@@ -176,6 +180,20 @@ impl WaylandState {
         self.conn.flush().context("failed to flush Wayland connection")?;
         self.next_buffer = 1 - index;
         Ok(())
+    }
+
+    /// Change the requested layer-surface size (double-buffered property;
+    /// takes effect on the next commit, the compositor answers with a new
+    /// configure).
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        tracing::debug!("resizing surface to {width}x{height}");
+        self.width = width;
+        self.height = height;
+        self.layer.set_size(width, height);
+        self.layer.commit();
     }
 
     /// (Re)create the SHM pool and double buffer when the size changes.

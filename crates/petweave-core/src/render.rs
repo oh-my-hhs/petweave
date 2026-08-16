@@ -52,6 +52,65 @@ impl Frame {
             }
         }
     }
+
+    /// Composite `img` (RGBA, src-over) at offset `(x, y)`, clipped to bounds.
+    ///
+    /// Used to draw transparent sprites (PNG/SVG pets) on top of a cleared
+    /// frame. Premultiplied-style src-over with per-pixel alpha.
+    pub fn draw_image(&mut self, x: i32, y: i32, img: &Frame) {
+        let fw = self.width as i32;
+        let fh = self.height as i32;
+        let iw = img.width as i32;
+        let ih = img.height as i32;
+        let x0 = x.max(0);
+        let y0 = y.max(0);
+        let x1 = (x + iw).min(fw);
+        let y1 = (y + ih).min(fh);
+        for yy in y0..y1 {
+            let di = yy as usize * self.width as usize;
+            let si = (yy - y) as usize * img.width as usize;
+            for xx in x0..x1 {
+                let d = (di + xx as usize) * 4;
+                let s = (si + (xx - x) as usize) * 4;
+                let a = img.pixels[s + 3];
+                if a == 255 {
+                    self.pixels[d..d + 4].copy_from_slice(&img.pixels[s..s + 4]);
+                } else if a > 0 {
+                    let sa = a as f32 / 255.0;
+                    let da = self.pixels[d + 3] as f32 / 255.0;
+                    let oa = sa + da * (1.0 - sa);
+                    if oa > 0.0 {
+                        for c in 0..3 {
+                            let sc = img.pixels[s + c] as f32;
+                            let dc = self.pixels[d + c] as f32;
+                            // round(): truncation would drop 1 LSB on
+                            // partially transparent pixels (float error).
+                            self.pixels[d + c] =
+                                ((sc * sa + dc * da * (1.0 - sa)) / oa).round() as u8;
+                        }
+                        self.pixels[d + 3] = (oa * 255.0).round() as u8;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flip the frame horizontally in place (used for `mirror_x` pets).
+    pub fn flip_horizontal(&mut self) {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        for row in 0..h {
+            let line = row * w;
+            for col in 0..w / 2 {
+                let a = (line + col) * 4;
+                let b = (line + w - 1 - col) * 4;
+                self.pixels.swap(a, b);
+                self.pixels.swap(a + 1, b + 1);
+                self.pixels.swap(a + 2, b + 2);
+                self.pixels.swap(a + 3, b + 3);
+            }
+        }
+    }
 }
 
 /// Abstraction over a presentation backend.
@@ -89,5 +148,42 @@ mod tests {
         f.fill([0xff, 0xff, 0xff, 0xff]);
         f.fill_rect(100, 100, 5, 5, [0, 0, 0, 0]);
         assert!(f.pixels.iter().all(|&b| b == 0xff));
+    }
+
+    #[test]
+    fn draw_image_opaque_overwrites() {
+        let mut dst = Frame::new(4, 4);
+        dst.fill([0, 0, 0, 255]);
+        let mut src = Frame::new(2, 2);
+        src.fill([255, 0, 0, 255]);
+        dst.draw_image(1, 1, &src);
+        // Outside the sprite stays black, inside becomes red.
+        assert_eq!(&dst.pixels[0..4], &[0, 0, 0, 255]);
+        let i = (1 * 4 + 1) * 4;
+        assert_eq!(&dst.pixels[i..i + 4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn draw_image_alpha_blends() {
+        let mut dst = Frame::new(2, 2);
+        dst.fill([0, 0, 0, 255]); // opaque black dest
+        let mut src = Frame::new(2, 2);
+        // half-transparent red
+        src.fill([255, 0, 0, 128]);
+        dst.draw_image(0, 0, &src);
+        let i = 0;
+        // Result ≈ red at 50% over black: r≈128
+        assert!((dst.pixels[i] as i32 - 128).abs() <= 2);
+        assert_eq!(dst.pixels[i + 1], 0);
+        assert_eq!(dst.pixels[i + 2], 0);
+        assert_eq!(dst.pixels[i + 3], 255);
+    }
+
+    #[test]
+    fn flip_horizontal_mirrors() {
+        let mut f = Frame::new(2, 1);
+        f.pixels = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        f.flip_horizontal();
+        assert_eq!(f.pixels, vec![5, 6, 7, 8, 1, 2, 3, 4]);
     }
 }

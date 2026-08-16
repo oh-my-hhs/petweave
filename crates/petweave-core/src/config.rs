@@ -60,11 +60,29 @@ pub struct RenderConfig {
 pub struct PetConfig {
     /// Pet instance name (used in ids and logs).
     pub name: String,
-    /// Whether the built-in demo pet is loaded. (Real pets come with M2
-    /// role packages.)
+    /// Whether the pet is loaded.
     pub enabled: bool,
+    /// Pet kind: "demo" | "bongo" (role packages arrive with M2).
+    pub kind: String,
     /// Demo pet base color as #rrggbb[aa].
     pub color: String,
+    /// BongoCat-specific options.
+    pub bongo: BongoConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct BongoConfig {
+    /// Directory holding the four bongo cat PNG frames.
+    pub assets_dir: String,
+    /// Target cat height in pixels; width follows the asset aspect ratio.
+    pub cat_height: u32,
+    /// How long a paw stays down after a key press, in ms.
+    pub keypress_duration_ms: u64,
+    /// Map keys to left/right paws by physical position.
+    pub hand_mapping: bool,
+    /// Flip the cat horizontally (and swap the paw mapping).
+    pub mirror_x: bool,
 }
 
 impl Default for Config {
@@ -118,7 +136,21 @@ impl Default for PetConfig {
         Self {
             name: "demo".to_string(),
             enabled: true,
+            kind: "demo".to_string(),
             color: "#ff6699".to_string(),
+            bongo: BongoConfig::default(),
+        }
+    }
+}
+
+impl Default for BongoConfig {
+    fn default() -> Self {
+        Self {
+            assets_dir: "assets/bongocat".to_string(),
+            cat_height: 110,
+            keypress_duration_ms: 100,
+            hand_mapping: true,
+            mirror_x: false,
         }
     }
 }
@@ -159,6 +191,17 @@ impl Config {
                     "render.layer must be one of background|bottom|top|overlay, got {other:?}"
                 )));
             }
+        }
+        match self.pet.kind.as_str() {
+            "demo" | "bongo" => {}
+            other => {
+                return Err(Error::Config(format!(
+                    "pet.kind must be one of demo|bongo, got {other:?}"
+                )));
+            }
+        }
+        if !(10..=500).contains(&self.pet.bongo.cat_height) {
+            return Err(Error::Config("pet.bongo.cat_height must be in 10..=500".into()));
         }
         Ok(())
     }
@@ -210,6 +253,22 @@ mod tests {
     fn rejects_out_of_range_fps() {
         let cfg = Config {
             general: General { fps: 0, ..General::default() },
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn bongo_defaults_and_kind_validation() {
+        let cfg = Config::default();
+        assert_eq!(cfg.pet.kind, "demo");
+        assert_eq!(cfg.pet.bongo.cat_height, 110);
+        assert!(cfg.validate().is_ok());
+        let cfg = Config {
+            pet: PetConfig {
+                kind: "shimeji".into(),
+                ..PetConfig::default()
+            },
             ..Config::default()
         };
         assert!(cfg.validate().is_err());

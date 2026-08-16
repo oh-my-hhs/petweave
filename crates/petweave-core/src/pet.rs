@@ -36,4 +36,23 @@ pub trait Pet: Send {
 
     /// Draw the current state into `frame` (RGBA8, see [`Frame`]).
     fn render(&self, frame: &mut Frame);
+
+    /// Periodic animation tick, called by the host animation loop.
+    ///
+    /// Return `true` if a redraw is wanted. The default is a no-op.
+    fn tick(&mut self, _dt: f32) -> bool {
+        false
+    }
+
+    /// When the pet next needs the host to wake up (e.g. a paw-hold deadline
+    /// expires), if ever. The host sleeps until then when idle.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+
+    /// Preferred surface size (e.g. aspect-correct sprite size), if it
+    /// differs from the render config.
+    fn preferred_size(&self) -> Option<(u32, u32)> {
+        None
+    }
 }

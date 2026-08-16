@@ -35,6 +35,7 @@ enum FrameId {
     LeftDown = 1,
     RightDown = 2,
     BothDown = 3,
+    Sleeping = 4,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,9 +77,33 @@ fn select_frame(left_live: bool, right_live: bool) -> FrameId {
     }
 }
 
+/// Whether `now_minutes` falls in the sleep window (reference `anim_is_sleep_time`).
+pub fn is_in_sleep_window(now_minutes: u32, begin: u32, end: u32) -> bool {
+    if begin == end {
+        true
+    } else if begin < end {
+        now_minutes >= begin && now_minutes < end
+    } else {
+        now_minutes >= begin || now_minutes < end
+    }
+}
+
+/// Current local wall-clock minutes since midnight.
+fn local_minutes() -> u32 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as libc::time_t)
+        .unwrap_or(0);
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::localtime_r(&secs, &mut tm);
+    }
+    (tm.tm_hour as u32) * 60 + tm.tm_min as u32
+}
+
 pub struct BongoPet {
     id: PetId,
-    frames: [Frame; 4],
+    frames: [Frame; 5],
     keypress_duration: Duration,
     mirror_x: bool,
     hand_mapping: bool,
@@ -87,6 +112,12 @@ pub struct BongoPet {
     left_hold_until: Instant,
     right_hold_until: Instant,
     last_frame: FrameId,
+    /// Last key press time (idle sleep engages after `idle_sleep_timeout`).
+    last_key_pressed: Option<Instant>,
+    idle_sleep_timeout: Duration,
+    scheduled_sleep: bool,
+    sleep_begin_min: u32,
+    sleep_end_min: u32,
 }
 
 impl BongoPet {
@@ -100,12 +131,15 @@ impl BongoPet {
         let height = b.cat_height.max(10);
         let width = (height as f32 * aspect).round().max(1.0) as u32;
 
-        let mut frames = [
-            scale(load_png(dir.join(PNG_BOTH_UP))?, width, height)?,
-            scale(load_png(dir.join(PNG_LEFT_DOWN))?, width, height)?,
-            scale(load_png(dir.join(PNG_RIGHT_DOWN))?, width, height)?,
-            scale(load_png(dir.join(PNG_BOTH_DOWN))?, width, height)?,
-        ];
+        let both_up = scale(load_png(dir.join(PNG_BOTH_UP))?, width, height)?;
+        let left_down = scale(load_png(dir.join(PNG_LEFT_DOWN))?, width, height)?;
+        let right_down = scale(load_png(dir.join(PNG_RIGHT_DOWN))?, width, height)?;
+        let both_down = scale(load_png(dir.join(PNG_BOTH_DOWN))?, width, height)?;
+        // Sleeping frame is synthesized from the idle frame (dimmed) until
+        // the SVG sleeping artwork can be rasterized (docs/LIVE2D.md).
+        let sleeping = make_sleeping_frame(&both_up);
+
+        let mut frames = [both_up, left_down, right_down, both_down, sleeping];
         if b.mirror_x {
             for f in frames.iter_mut() {
                 f.flip_horizontal();
@@ -122,13 +156,49 @@ impl BongoPet {
             left_hold_until: Instant::now(),
             right_hold_until: Instant::now(),
             last_frame: FrameId::BothUp,
+            last_key_pressed: None,
+            idle_sleep_timeout: Duration::from_secs(b.idle_sleep_timeout_secs),
+            scheduled_sleep: b.enable_scheduled_sleep,
+            sleep_begin_min: petweave_core::config::hhmm_to_minutes(&b.sleep_begin).unwrap_or(22 * 60),
+            sleep_end_min: petweave_core::config::hhmm_to_minutes(&b.sleep_end).unwrap_or(6 * 60),
         })
+    }
+
+    /// True when the scheduled sleep window is active (wall clock).
+    fn scheduled_sleep_active(&self) -> bool {
+        self.scheduled_sleep && is_in_sleep_window(local_minutes(), self.sleep_begin_min, self.sleep_end_min)
+    }
+
+    fn is_sleeping(&self, now: Instant) -> bool {
+        if self.scheduled_sleep_active() {
+            return true;
+        }
+        self.idle_sleep_timeout > Duration::ZERO
+            && self
+                .last_key_pressed
+                .is_some_and(|t| now.duration_since(t) >= self.idle_sleep_timeout)
     }
 
     fn frame_id(&self) -> FrameId {
         let now = Instant::now();
+        if self.is_sleeping(now) {
+            return FrameId::Sleeping;
+        }
         select_frame(now < self.left_hold_until, now < self.right_hold_until)
     }
+}
+
+/// Dim the idle frame to suggest a sleeping cat (placeholder artwork).
+fn make_sleeping_frame(idle: &Frame) -> Frame {
+    let mut f = idle.clone();
+    for px in f.pixels.chunks_exact_mut(4) {
+        if px[3] > 0 {
+            px[0] = (px[0] as u16 * 55 / 100) as u8;
+            px[1] = (px[1] as u16 * 55 / 100) as u8;
+            px[2] = (px[2] as u16 * 55 / 100) as u8;
+        }
+    }
+    f
 }
 
 /// Resolve the assets directory: the configured path, else a dev fallback to
@@ -163,6 +233,13 @@ impl Pet for BongoPet {
     fn on_event(&mut self, event: &Event) -> bool {
         match event {
             Event::Input(ev) if ev.pressed => {
+                // During the scheduled sleep window keys are discarded
+                // (reference behavior); idle-sleep is broken by any key.
+                if self.scheduled_sleep_active() {
+                    return false;
+                }
+                let now = Instant::now();
+                self.last_key_pressed = Some(now);
                 let mut paw = if self.hand_mapping {
                     paw_for_keycode(ev.code)
                 } else {
@@ -174,7 +251,7 @@ impl Pet for BongoPet {
                 if self.mirror_x {
                     paw = paw.swapped();
                 }
-                let until = Instant::now() + self.keypress_duration;
+                let until = now + self.keypress_duration;
                 match paw {
                     Paw::Left => self.left_hold_until = until,
                     Paw::Right => self.right_hold_until = until,
@@ -205,15 +282,37 @@ impl Pet for BongoPet {
 
     fn next_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
-        [self.left_hold_until, self.right_hold_until]
+        let mut deadline = [self.left_hold_until, self.right_hold_until]
             .into_iter()
             .filter(|d| *d > now)
-            .min()
+            .min();
+        // Idle sleep engages at last_key + timeout.
+        if self.idle_sleep_timeout > Duration::ZERO {
+            if let Some(t) = self.last_key_pressed {
+                let engage = t + self.idle_sleep_timeout;
+                if engage > now && deadline.map_or(true, |d| engage < d) {
+                    deadline = Some(engage);
+                }
+            }
+        }
+        // Scheduled sleep checks wall-clock once per second.
+        if self.scheduled_sleep {
+            let wake = now + Duration::from_secs(1);
+            if deadline.map_or(true, |d| wake < d) {
+                deadline = Some(wake);
+            }
+        }
+        deadline
     }
 
     fn preferred_size(&self) -> Option<(u32, u32)> {
         let f = &self.frames[FrameId::BothUp as usize];
         Some((f.width, f.height))
+    }
+
+    fn reload(&mut self, cfg: &PetConfig) -> Result<(), String> {
+        *self = Self::new(cfg)?;
+        Ok(())
     }
 }
 
@@ -267,6 +366,7 @@ fn scale(img: Frame, width: u32, height: u32) -> Result<Frame, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use petweave_core::config::BongoConfig;
     use petweave_core::events::InputEvent;
 
     fn test_pet() -> BongoPet {
@@ -353,6 +453,95 @@ mod tests {
         assert!(pet.tick(0.0), "tick should notice the frame change");
         pet.render(&mut frame);
         assert_eq!(frame.pixels, idle);
+    }
+
+    #[test]
+    fn sleep_window_logic() {
+        // Normal range (10:00–22:00).
+        assert!(is_in_sleep_window(12 * 60, 10 * 60, 22 * 60));
+        assert!(!is_in_sleep_window(9 * 60, 10 * 60, 22 * 60));
+        assert!(!is_in_sleep_window(22 * 60, 10 * 60, 22 * 60));
+        // Overnight range (22:00–06:00).
+        assert!(is_in_sleep_window(23 * 60, 22 * 60, 6 * 60));
+        assert!(is_in_sleep_window(2 * 60, 22 * 60, 6 * 60));
+        assert!(!is_in_sleep_window(12 * 60, 22 * 60, 6 * 60));
+        // begin == end -> always sleep.
+        assert!(is_in_sleep_window(0, 12 * 60, 12 * 60));
+    }
+
+    #[test]
+    fn sleeping_frame_is_dimmer_than_idle() {
+        let pet = test_pet();
+        let idle = &pet.frames[FrameId::BothUp as usize];
+        let sleeping = &pet.frames[FrameId::Sleeping as usize];
+        let sum = |f: &Frame| -> u32 {
+            f.pixels
+                .chunks_exact(4)
+                .map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
+                .sum()
+        };
+        assert!(sum(sleeping) < sum(idle), "sleeping frame must be dimmer");
+    }
+
+    #[test]
+    fn idle_sleep_engages_and_key_wakes() {
+        let cfg = PetConfig {
+            kind: "bongo".to_string(),
+            bongo: petweave_core::config::BongoConfig {
+                keypress_duration_ms: 500,
+                idle_sleep_timeout_secs: 1,
+                ..petweave_core::config::BongoConfig::default()
+            },
+            ..PetConfig::default()
+        };
+        let mut pet = BongoPet::new(&cfg).expect("assets load");
+        let (w, h) = pet.preferred_size().unwrap();
+        let mut frame = Frame::new(w, h);
+
+        pet.on_event(&Event::Input(InputEvent {
+            device: "test".into(),
+            code: 30,
+            pressed: true,
+        }));
+        pet.tick(0.0);
+        pet.render(&mut frame);
+        assert_ne!(frame.pixels, pet.frames[FrameId::Sleeping as usize].pixels);
+
+        // After idle timeout the cat falls asleep.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(pet.tick(0.0), "tick should notice falling asleep");
+        pet.render(&mut frame);
+        assert_eq!(frame.pixels, pet.frames[FrameId::Sleeping as usize].pixels);
+
+        // A key press wakes it (idle sleep, not scheduled).
+        pet.on_event(&Event::Input(InputEvent {
+            device: "test".into(),
+            code: 57,
+            pressed: true,
+        }));
+        assert!(pet.tick(0.0), "tick should notice waking up");
+        pet.render(&mut frame);
+        assert_ne!(frame.pixels, pet.frames[FrameId::Sleeping as usize].pixels);
+    }
+
+    #[test]
+    fn reload_applies_new_cat_height() {
+        let cfg = PetConfig {
+            kind: "bongo".to_string(),
+            ..PetConfig::default()
+        };
+        let mut pet = BongoPet::new(&cfg).expect("assets load");
+        let before = pet.preferred_size().unwrap();
+        let cfg2 = PetConfig {
+            bongo: BongoConfig {
+                cat_height: 200,
+                ..BongoConfig::default()
+            },
+            ..cfg
+        };
+        pet.reload(&cfg2).expect("reload");
+        let after = pet.preferred_size().unwrap();
+        assert!(after.1 > before.1, "cat should grow: {before:?} -> {after:?}");
     }
 
     #[test]

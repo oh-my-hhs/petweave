@@ -61,6 +61,12 @@ impl Pet for DemoPet {
             frame.fill_rect(cx + (h / 8) as i32, cy, eye, eye, [0, 0, 0, 255]);
         }
     }
+
+    fn reload(&mut self, cfg: &PetConfig) -> Result<(), String> {
+        self.base = parse_hex_color(&cfg.color).unwrap_or(self.base);
+        self.color = self.base;
+        Ok(())
+    }
 }
 
 /// Parse `#rrggbb` or `#rrggbbaa` into RGBA. `None` on malformed input.

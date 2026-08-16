@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(
     name = "petweave",
     version,
@@ -51,4 +51,19 @@ pub struct Cli {
     /// Verbose (debug) logging.
     #[arg(short, long)]
     pub verbose: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Diagnose the environment: input permissions, config, Wayland session.
+    Doctor {
+        /// Install the udev uaccess rule (needs root / sudo).
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Alias for `--list-devices`: list detected keyboard devices.
+    ListDevices,
 }

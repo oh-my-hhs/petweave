@@ -103,4 +103,23 @@ impl Runtime {
         }
         self.frames.iter_mut().collect()
     }
+
+    /// Hot reload: tell every pet to re-apply config, then rebuild frames at
+    /// the (possibly changed) preferred size.
+    pub fn reload(&mut self, pet_cfg: &PetConfig, render_size: (u32, u32)) {
+        for pet in self.pets.iter_mut() {
+            if let Err(e) = pet.reload(pet_cfg) {
+                tracing::warn!("pet reload failed: {e}");
+            }
+        }
+        let mut size = render_size;
+        if let Some(p) = self.pets.first() {
+            if let Some((w, h)) = p.preferred_size() {
+                size = (w, h);
+            }
+        }
+        self.surface_size = size;
+        self.frames = self.pets.iter().map(|_| Frame::new(size.0, size.1)).collect();
+        tracing::info!("runtime reloaded (surface {}x{})", size.0, size.1);
+    }
 }

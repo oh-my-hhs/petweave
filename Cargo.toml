@@ -19,8 +19,10 @@ thiserror = "2.0.20"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wayland-client = "0.31.13"
+wayland-protocols-wlr = "0.3.11"
 smithay-client-toolkit = "0.20.0"
 calloop = { version = "0.14.4", features = ["signals"] }
 calloop-wayland-source = "0.4.1"
-nix = { version = "0.31.2", features = ["fs", "poll", "signal"] }
+nix = { version = "0.31.2", features = ["fs", "poll", "signal", "inotify"] }
 libc = "0.2.189"
+sysinfo = "0.33.1"

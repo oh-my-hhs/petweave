@@ -6,32 +6,49 @@ mod graphics;
 mod platform;
 mod runtime;
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
+use nix::errno::Errno;
+use nix::fcntl::{open, OFlag};
+use nix::sys::stat::Mode;
 
 use petweave_core::Config;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 use crate::platform::input;
+use crate::platform::singleton::Singleton;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
 
+    if let Some(Command::Doctor { apply }) = &cli.command {
+        return run_doctor(*apply);
+    }
+    if matches!(cli.command, Some(Command::ListDevices)) {
+        print_keyboards();
+        return Ok(());
+    }
     if cli.list_devices {
         print_keyboards();
         return Ok(());
     }
 
     // Config: file (if present) -> CLI overrides -> validation.
-    let config_path = cli
-        .config
-        .clone()
-        .or_else(default_config_path);
+    let config_path = cli.config.clone().or_else(default_config_path);
     let mut config = Config::load(config_path.as_deref())?;
     apply_cli_overrides(&mut config, &cli)?;
+
+    // Tracing: RUST_LOG env wins, else config log_level (CLI -v = debug).
+    let level = if cli.verbose {
+        "debug".to_string()
+    } else {
+        config.general.log_level.clone()
+    };
+    init_tracing(&level);
 
     // Debug helper: render the pet's current frame to a PNG, no Wayland.
     if let Some(path) = cli.preview.clone() {
@@ -39,9 +56,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Resolve keyboard devices to watch.
-    let devices = resolve_devices(&config, &cli);
-    let device_str = devices
+    // Resolve keyboard devices (the input manager re-resolves on hotplug).
+    let device_str = input::resolve(&config.input)
         .iter()
         .map(|d| format!("{} ({})", d.path.display(), d.name))
         .collect::<Vec<_>>()
@@ -51,14 +67,14 @@ fn main() -> Result<()> {
         if device_str.is_empty() { "<none>" } else { &device_str }
     );
 
-    app::run(config, devices)
+    // Single instance (flock'd PID file), then run.
+    let _singleton = Singleton::acquire()?;
+    app::run(config, config_path, cli)
 }
 
-/// Initialize `tracing` with an env-filter defaulting to the CLI verbosity.
-fn init_tracing(verbose: bool) {
-    let level = if verbose { "debug" } else { "info" };
-    let filter = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| level.to_string());
+/// Initialize `tracing` with an env-filter defaulting to `level`.
+fn init_tracing(level: &str) {
+    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| level.to_string());
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_new(filter).unwrap_or_else(|_| {
@@ -79,7 +95,8 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 /// CLI flags override config values (CLI wins over file over defaults).
-fn apply_cli_overrides(config: &mut Config, cli: &Cli) -> Result<()> {
+/// Re-applied on hot reload, so it must be usable from `app.rs`.
+pub(crate) fn apply_cli_overrides(config: &mut Config, cli: &Cli) -> Result<()> {
     if let Some(fps) = cli.fps {
         config.general.fps = fps;
     }
@@ -106,37 +123,23 @@ fn apply_cli_overrides(config: &mut Config, cli: &Cli) -> Result<()> {
 
 /// Render the enabled pet's frame to a PNG (used by `--preview`).
 fn export_preview(config: &Config, path: &std::path::Path) -> Result<()> {
-    let mut runtime = crate::runtime::Runtime::new(&config.pet, (config.render.width, config.render.height));
+    let mut runtime = crate::runtime::Runtime::new(
+        &config.pet,
+        (config.render.width, config.render.height),
+    );
     let frames = runtime.render_all();
     let Some(frame) = frames.first() else {
-        anyhow::bail!("no pet enabled — nothing to preview");
+        bail!("no pet enabled — nothing to preview");
     };
     image::save_buffer(path, &frame.pixels, frame.width, frame.height, image::ColorType::Rgba8)
         .with_context(|| format!("failed to save preview to {}", path.display()))?;
-    println!("preview saved: {} ({}x{})", path.display(), frame.width, frame.height);
+    println!(
+        "preview saved: {} ({}x{})",
+        path.display(),
+        frame.width,
+        frame.height
+    );
     Ok(())
-}
-
-/// Assemble the device list: explicit paths first, then auto-detection.
-fn resolve_devices(config: &Config, _cli: &Cli) -> Vec<input::KeyboardDevice> {
-    if !config.input.enabled {
-        return Vec::new();
-    }
-    let mut devices = Vec::new();
-    for path in &config.input.devices {
-        match input::probe_device(std::path::Path::new(path)) {
-            Some(d) => devices.push(d),
-            None => tracing::warn!("configured device not usable: {path}"),
-        }
-    }
-    if config.input.auto_detect {
-        for d in input::scan_keyboards() {
-            if !devices.iter().any(|e| e.path == d.path) {
-                devices.push(d);
-            }
-        }
-    }
-    devices
 }
 
 fn print_keyboards() {
@@ -151,4 +154,110 @@ fn print_keyboards() {
     for d in &devices {
         println!("{}\t{}", d.path.display(), d.name);
     }
+}
+
+// --- doctor ----------------------------------------------------------------
+
+const UDEV_UACCESS_RULE: &str = "SUBSYSTEM==\"input\", KERNEL==\"event*\", TAG+=\"uaccess\"\n";
+
+fn run_doctor(apply: bool) -> Result<()> {
+    println!("== petweave doctor ==");
+
+    // Config.
+    match default_config_path() {
+        Some(p) => match Config::load(Some(&p)) {
+            Ok(cfg) => println!(
+                "[ok]    config: {} (valid, pet kind '{}')",
+                p.display(),
+                cfg.pet.kind
+            ),
+            Err(e) => println!("[warn]  config: {} — {e}", p.display()),
+        },
+        None => println!("[info]  config: none found (using defaults)"),
+    }
+
+    // Wayland session.
+    let has_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("WAYLAND_SOCKET").is_some();
+    println!(
+        "[{}] Wayland session: {}",
+        if has_wayland { "ok  " } else { "warn" },
+        if has_wayland {
+            "detected"
+        } else {
+            "not detected — run from a Wayland session"
+        }
+    );
+
+    // Input permissions.
+    let keyboards = input::scan_keyboards();
+    println!("[info]  keyboards found: {}", keyboards.len());
+    let mut any_blocked = false;
+    for k in &keyboards {
+        match open(&k.path, OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty()) {
+            Ok(_) => println!("[ok]    {} ({}) — readable", k.path.display(), k.name),
+            Err(Errno::EACCES) => {
+                any_blocked = true;
+                println!("[fail]  {} ({}) — PERMISSION DENIED", k.path.display(), k.name);
+            }
+            Err(e) => println!("[warn]  {} — {e}", k.path.display()),
+        }
+    }
+    if keyboards.is_empty() {
+        println!("[warn]  no keyboards visible under /dev/input");
+    }
+    if any_blocked {
+        println!("[fail]  /dev/input needs permissions:");
+        println!("  Option A (recommended): install a udev uaccess rule:");
+        println!("      {UDEV_UACCESS_RULE}");
+        println!("      -> /etc/udev/rules.d/99-petweave-input.rules  then: sudo udevadm control --reload");
+        println!("  Option B:  sudo usermod -aG input $USER  (then log out and back in)");
+        if apply {
+            apply_udev_rule()?;
+        } else {
+            println!("  re-run `petweave doctor --apply` to install the rule (needs root/sudo)");
+        }
+    } else {
+        println!("[ok]    input permissions: readable");
+    }
+    Ok(())
+}
+
+/// Install the uaccess udev rule: direct write, then `sudo tee` fallback.
+fn apply_udev_rule() -> Result<()> {
+    for dir in ["/etc/udev/rules.d", "/usr/lib/udev/rules.d"] {
+        if !Path::new(dir).is_dir() {
+            continue;
+        }
+        let path = Path::new(dir).join("99-petweave-input.rules");
+        // Try a direct write first.
+        if std::fs::write(&path, UDEV_UACCESS_RULE).is_ok() {
+            println!("[ok] wrote {}", path.display());
+            println!("     now run: sudo udevadm control --reload");
+            return Ok(());
+        }
+        // Fall back to sudo tee.
+        if let Ok(mut child) = std::process::Command::new("sudo")
+            .args(["tee", path.to_str().unwrap_or_default()])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            let stdin = child.stdin.as_mut();
+            if let Some(stdin) = stdin {
+                if stdin.write_all(UDEV_UACCESS_RULE.as_bytes()).is_ok()
+                    && child.wait().map(|s| s.success()).unwrap_or(false)
+                {
+                    println!("[ok] wrote {} (via sudo)", path.display());
+                    println!("     now run: sudo udevadm control --reload");
+                    return Ok(());
+                }
+            }
+        }
+        bail!(
+            "could not write {} — run manually: echo '{UDEV_UACCESS_RULE}' | sudo tee {}",
+            path.display(),
+            path.display()
+        );
+    }
+    bail!("no udev rules directory found (/etc/udev/rules.d, /usr/lib/udev/rules.d)")
 }

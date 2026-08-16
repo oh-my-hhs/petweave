@@ -1,12 +1,15 @@
 # PetWeave example configuration.
 # Copy to ~/.config/petweave/petweave.toml and adjust.
 # All keys are optional — every section/field falls back to its default.
+# The file is watched and hot-reloaded while running.
 
 [general]
 # Animation/render loop target FPS cap (1..=240).
 fps = 60
 # Log level: trace | debug | info | warn | error.
 log_level = "info"
+# How often to sample CPU/memory and notify pets (Event::System). 0 = off.
+sysinfo_interval_secs = 5
 
 [input]
 # Master switch for global keyboard capture.
@@ -16,11 +19,11 @@ auto_detect = true
 # Explicit device paths; wins over auto-detection for these devices.
 # Find yours with: petweave list-devices
 devices = []
-# Hotplug rescan interval in seconds (reserved; M1).
+# Hotplug rescan interval in seconds (fast 5s retry until a device is found).
 scan_interval_secs = 30
 
 [render]
-# Pet surface size in pixels.
+# Pet surface size in pixels (logical; bongo overrides with its aspect).
 width = 256
 height = 256
 # wlr-layer-shell layer: background | bottom | top | overlay.
@@ -32,11 +35,18 @@ margin_top = 16
 margin_right = 0
 margin_bottom = 16
 margin_left = 0
+# Output to bind the surface to, by name (xdg-output). Empty = auto.
+# Find yours with: wlr-randr / hyprctl monitors / niri msg outputs
+output = ""
+# Never auto-hide the pet for fullscreen windows.
+disable_fullscreen_hide = false
 
 [pet]
-# Built-in pet kind: "demo" | "bongo" (role packages arrive with M2).
+# Pet instance name (used in ids and logs).
 name = "bongo"
+# Whether the pet is loaded.
 enabled = true
+# Pet kind: "demo" | "bongo" (role packages arrive with M2).
 kind = "bongo"
 # Demo pet base color as #rrggbb or #rrggbbaa. The demo pet flashes white on
 # keypress.
@@ -53,3 +63,9 @@ keypress_duration_ms = 100
 hand_mapping = true
 # Flip the cat horizontally (and swap the paw mapping).
 mirror_x = false
+# Sleep (dimmed cat) after this many seconds without a key press. 0 = off.
+idle_sleep_timeout_secs = 0
+# Scheduled sleep window (wall-clock); keys are ignored while active.
+enable_scheduled_sleep = false
+sleep_begin = "22:00"
+sleep_end = "06:00"

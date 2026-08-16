@@ -5,9 +5,12 @@
 //! on `/dev/input` (udev `uaccess` rule or the `input` group); `petweave
 //! list-devices` reports what is visible.
 //!
-//! Each device gets a reader thread; events are pushed into the host's
-//! calloop channel. Only key press/release events are forwarded — key *codes*
-//! are not logged anywhere (see docs/TECH_STACK.md §4.3 privacy).
+//! A manager thread rescans for devices on a fast interval (5s) until at
+//! least one is found, then on the configured `scan_interval_secs` — porting
+//! wayland-bongocat's hotplug strategy. Each device gets its own reader
+//! thread; key press/release events are pushed into the host's calloop
+//! channel. Key *codes* are not logged anywhere (see docs/TECH_STACK.md §4.3
+//! privacy).
 
 use std::fs;
 use std::os::fd::{AsFd, AsRawFd};
@@ -15,13 +18,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use nix::errno::Errno;
 use nix::fcntl::{open, OFlag};
 use nix::poll::{poll, PollFd, PollFlags};
 use nix::sys::stat::Mode;
 
+use petweave_core::config::InputConfig;
 use petweave_core::events::Event;
+
+/// Fast rescan interval until at least one device is found (seconds).
+const FAST_RETRY: Duration = Duration::from_secs(5);
 
 /// A discovered/configured keyboard device.
 #[derive(Debug, Clone)]
@@ -56,6 +64,28 @@ const NON_KEYBOARD_NAMES: &[&str] = &[
 
 fn is_keyboard_name(name: &str) -> bool {
     !NON_KEYBOARD_NAMES.iter().any(|b| name.contains(b))
+}
+
+/// Resolve the device list for `cfg`: explicit paths first, then autodetect.
+pub fn resolve(cfg: &InputConfig) -> Vec<KeyboardDevice> {
+    if !cfg.enabled {
+        return Vec::new();
+    }
+    let mut devices = Vec::new();
+    for path in &cfg.devices {
+        match probe_device(Path::new(path)) {
+            Some(d) => devices.push(d),
+            None => tracing::warn!("configured device not usable: {path}"),
+        }
+    }
+    if cfg.auto_detect {
+        for d in scan_keyboards() {
+            if !devices.iter().any(|e| e.path == d.path) {
+                devices.push(d);
+            }
+        }
+    }
+    devices
 }
 
 /// Scan `/dev/input/event*` and return devices that look like keyboards.
@@ -103,6 +133,7 @@ pub fn probe_device(path: &Path) -> Option<KeyboardDevice> {
         return None;
     }
     let name = String::from_utf8_lossy(&name_buf[..n as usize])
+        .trim_end_matches('\0')
         .trim()
         .to_string();
 
@@ -124,6 +155,26 @@ pub fn probe_device(path: &Path) -> Option<KeyboardDevice> {
     if !has_key || has_rel || !is_keyboard_name(&name) {
         return None;
     }
+    // Require a minimal letter-key set so media/audio button devices (which
+    // also report EV_KEY without EV_REL) are excluded.
+    let mut keybits = [0u8; 96]; // (KEY_MAX + 7) / 8
+    let r = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            eviocgbit(EV_KEY, keybits.len()),
+            keybits.as_mut_ptr() as *mut libc::c_char,
+        )
+    };
+    if r < 0 {
+        return None;
+    }
+    for key in [1u32, 16, 30, 57] {
+        // KEY_ESC, KEY_Q, KEY_A, KEY_SPACE
+        let bit = keybits[(key / 8) as usize] & (1 << (key % 8));
+        if bit == 0 {
+            return None;
+        }
+    }
 
     Some(KeyboardDevice {
         path: path.to_path_buf(),
@@ -131,30 +182,26 @@ pub fn probe_device(path: &Path) -> Option<KeyboardDevice> {
     })
 }
 
-/// Owns the reader threads for a set of devices.
+/// Owns the hotplug manager and per-device reader threads.
 pub struct InputReader {
     stop: Arc<AtomicBool>,
-    _handles: Vec<thread::JoinHandle<()>>,
+    _handle: thread::JoinHandle<()>,
 }
 
 impl InputReader {
-    /// Spawn one reader thread per device.
-    pub fn start(devices: Vec<KeyboardDevice>, tx: calloop::channel::Sender<Event>) -> Self {
+    /// Start the manager loop (initial scan + periodic rescan + readers).
+    pub fn start(cfg: &InputConfig, tx: calloop::channel::Sender<Event>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let mut handles = Vec::new();
-        for dev in devices {
-            let tx = tx.clone();
-            let stop = stop.clone();
-            tracing::info!("watching keyboard {}", dev.path.display());
-            handles.push(thread::spawn(move || read_loop(dev, tx, stop)));
-        }
+        let stop2 = stop.clone();
+        let cfg = cfg.clone();
+        let handle = thread::spawn(move || manager_loop(cfg, tx, stop2));
         Self {
             stop,
-            _handles: handles,
+            _handle: handle,
         }
     }
 
-    /// Ask all reader threads to exit (they poll with a 200ms timeout).
+    /// Ask all threads to exit.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
@@ -164,6 +211,68 @@ impl Drop for InputReader {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+struct ActiveReader {
+    path: PathBuf,
+    stop: Arc<AtomicBool>,
+    handle: thread::JoinHandle<()>,
+}
+
+/// Rescan loop: fast retry until a device is found, then the configured
+/// interval; start/stop reader threads to track the current device set.
+fn manager_loop(cfg: InputConfig, tx: calloop::channel::Sender<Event>, stop: Arc<AtomicBool>) {
+    let mut active: Vec<ActiveReader> = Vec::new();
+    let mut ever_found = false;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let desired = resolve(&cfg);
+        if !desired.is_empty() {
+            ever_found = true;
+        }
+        // Start readers for new devices.
+        for dev in &desired {
+            if !active.iter().any(|a| a.path == dev.path) {
+                tracing::info!("watching keyboard {}", dev.path.display());
+                let dev_stop = Arc::new(AtomicBool::new(false));
+                let tx2 = tx.clone();
+                let stop2 = dev_stop.clone();
+                let dev_thread = dev.clone();
+                let handle = thread::spawn(move || read_loop(dev_thread, tx2, stop2));
+                active.push(ActiveReader {
+                    path: dev.path.clone(),
+                    stop: dev_stop,
+                    handle,
+                });
+            }
+        }
+        // Prune devices that are gone (removed from config, unplugged, or the
+        // reader thread died) — they'll be re-added by a later rescan.
+        let mut i = 0;
+        while i < active.len() {
+            let keep = desired.iter().any(|d| d.path == active[i].path)
+                && !active[i].handle.is_finished();
+            if !keep {
+                let dead = active.swap_remove(i);
+                dead.stop.store(true, Ordering::Relaxed);
+                tracing::debug!("stopped watching {}", dead.path.display());
+            } else {
+                i += 1;
+            }
+        }
+        let interval = if ever_found {
+            Duration::from_secs(cfg.scan_interval_secs.max(1))
+        } else {
+            FAST_RETRY
+        };
+        thread::sleep(interval);
+    }
+    for r in active {
+        r.stop.store(true, Ordering::Relaxed);
+    }
+    tracing::debug!("input manager stopped");
 }
 
 /// Linux `struct input_event` (24 bytes on 64-bit LE).
@@ -182,7 +291,10 @@ fn read_loop(dev: KeyboardDevice, tx: calloop::channel::Sender<Event>, stop: Arc
         OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
         Mode::empty(),
     ) else {
-        tracing::warn!("cannot open {} — check /dev/input permissions", dev.path.display());
+        tracing::warn!(
+            "cannot open {} — check /dev/input permissions",
+            dev.path.display()
+        );
         return;
     };
     let mut buf = [0u8; 24];

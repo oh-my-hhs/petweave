@@ -1,5 +1,6 @@
 //! The pet abstraction: what a pet author implements.
 
+use crate::config::PetConfig;
 use crate::events::Event;
 use crate::render::Frame;
 
@@ -54,5 +55,13 @@ pub trait Pet: Send {
     /// differs from the render config.
     fn preferred_size(&self) -> Option<(u32, u32)> {
         None
+    }
+
+    /// Apply a new pet config on hot reload.
+    ///
+    /// Returns an error string if the pet could not be reloaded (the host
+    /// keeps the old state and logs it).
+    fn reload(&mut self, _cfg: &PetConfig) -> Result<(), String> {
+        Ok(())
     }
 }

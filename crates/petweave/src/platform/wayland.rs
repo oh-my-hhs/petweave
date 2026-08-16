@@ -1,13 +1,15 @@
 //! Wayland platform layer.
 //!
 //! Connection + registry, a `wlr-layer-shell` surface (one per pet, MVP has
-//! one) and CPU/SHM double-buffered presentation.
+//! one) and CPU/SHM double-buffered presentation with HiDPI buffer scaling
+//! and xdg-output binding.
 //!
 //! Design notes (see `docs/TECH_STACK.md` §4.1/§4.2): the layer surface is
-//! positioned via anchor + margins; the input region defaults to the whole
-//! surface; pets draw into an RGBA [`Frame`] which is blitted to a BGRA
-//! (`ARGB8888`) SHM buffer. sctk's [`SlotPool`] tracks buffer release, so we
-//! only redraw into buffers the compositor has returned.
+//! positioned via anchor + margins; pets draw into an RGBA [`Frame`] at
+//! logical size which is blitted (with integer upscaling for HiDPI) into a
+//! BGRA (`ARGB8888`) SHM buffer sized at the surface's buffer scale. sctk's
+//! [`SlotPool`] tracks buffer release, so we only redraw into buffers the
+//! compositor has returned.
 
 use anyhow::{anyhow, Context, Result};
 
@@ -34,6 +36,7 @@ use smithay_client_toolkit::{
 
 use crate::app::App;
 use crate::graphics::blit_rgba_to_bgra;
+use crate::platform::fullscreen::FullscreenTracker;
 
 /// Wayland state owned by the host (`App.wayland`).
 ///
@@ -42,7 +45,7 @@ use crate::graphics::blit_rgba_to_bgra;
 /// host event loop (`WaylandState::connect` returns it alongside the state).
 pub struct WaylandState {
     pub conn: Connection,
-    /// Reserved for M1 (multi-surface pets, protocol version checks).
+    /// Reserved for M1 protocol plumbing.
     #[allow(dead_code)]
     pub qh: QueueHandle<App>,
     /// Reserved for M1 (per-surface creation from pets).
@@ -58,20 +61,24 @@ pub struct WaylandState {
     /// Reserved for M1 (drag, click-through region updates).
     #[allow(dead_code)]
     pub layer: LayerSurface,
-    /// SHM pool holding the double buffer.
+    /// Output the surface is bound to (xdg-output by name), if any.
+    pub bound_output: Option<wl_output::WlOutput>,
+    /// Integer buffer scale for HiDPI (from scale_factor_changed).
+    pub scale: i32,
+    /// SHM pool holding the double buffer (sized at physical pixels).
     pool: Option<SlotPool>,
     buffers: [Option<Buffer>; 2],
-    next_buffer: usize,
+    pool_w: i32,
+    pool_h: i32,
     /// True once the compositor sent the initial configure.
     pub configured: bool,
-    /// Current surface size in pixels (from config, updated on configure).
+    /// Current surface size in logical pixels.
     pub width: u32,
     pub height: u32,
 }
 
 impl WaylandState {
-    /// Connect to the compositor, create the layer surface, and return the
-    /// state together with the event queue for the host loop.
+    /// Connect to the compositor and create the layer surface.
     pub fn connect(render: &RenderConfig) -> Result<(Self, EventQueue<App>)> {
         let conn = Connection::connect_to_env()
             .context("failed to connect to Wayland (is WAYLAND_DISPLAY set?)")?;
@@ -96,20 +103,9 @@ impl WaylandState {
             surface.clone(),
             parse_layer(&render.layer)?,
             Some("petweave"),
-            None, // no output binding yet (M1: xdg-output multi-monitor)
+            None, // bound to a named output later if configured
         );
-        layer.set_anchor(parse_anchor(&render.anchor)?);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_margin(
-            render.margin_top,
-            render.margin_right,
-            render.margin_bottom,
-            render.margin_left,
-        );
-        layer.set_size(render.width, render.height);
-        // Initial commit without a buffer: the compositor answers with a
-        // configure, after which we draw the first frame.
-        layer.commit();
+        Self::apply_props(&layer, render)?;
 
         Ok((
             Self {
@@ -122,9 +118,12 @@ impl WaylandState {
                 output_state,
                 surface,
                 layer,
+                bound_output: None,
+                scale: 1,
                 pool: None,
                 buffers: [None, None],
-                next_buffer: 0,
+                pool_w: 0,
+                pool_h: 0,
                 configured: false,
                 width: render.width,
                 height: render.height,
@@ -133,21 +132,77 @@ impl WaylandState {
         ))
     }
 
-    /// Present `frame` to the layer surface.
+    /// (Re)create the layer surface bound to `output` (None = compositor
+    /// chooses). Dropping the old `LayerSurface` destroys role + surface.
+    pub fn rebind_to_output(
+        &mut self,
+        output: Option<&wl_output::WlOutput>,
+        render: &RenderConfig,
+    ) -> Result<()> {
+        self.pool = None;
+        self.buffers = [None, None];
+        let surface = self.compositor.create_surface(&self.qh);
+        let layer = self.layer_shell.create_layer_surface(
+            &self.qh,
+            surface.clone(),
+            parse_layer(&render.layer)?,
+            Some("petweave"),
+            output,
+        );
+        Self::apply_props(&layer, render)?;
+        self.surface = surface;
+        self.layer = layer;
+        self.bound_output = output.cloned();
+        self.configured = false;
+        self.width = render.width;
+        self.height = render.height;
+        tracing::info!("layer surface bound to output: {}", output.map(|_| "named").unwrap_or("auto"));
+        Ok(())
+    }
+
+    /// Property-level hot reload: layer/anchor/margins/size (double-buffered).
+    pub fn apply_render_props(&mut self, render: &RenderConfig) -> Result<()> {
+        Self::apply_props(&self.layer, render)?;
+        self.width = render.width;
+        self.height = render.height;
+        Ok(())
+    }
+
+    fn apply_props(layer: &LayerSurface, render: &RenderConfig) -> Result<()> {
+        layer.set_layer(parse_layer(&render.layer)?);
+        layer.set_anchor(parse_anchor(&render.anchor)?);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_margin(
+            render.margin_top,
+            render.margin_right,
+            render.margin_bottom,
+            render.margin_left,
+        );
+        layer.set_size(render.width, render.height);
+        // Initial/updated commit without a buffer: the compositor answers
+        // with a configure, after which we draw the first frame.
+        layer.commit();
+        Ok(())
+    }
+
+    /// Present `frame` (logical size) to the layer surface.
     ///
-    /// Picks the first double-buffer slot the compositor has released, blits
-    /// the RGBA frame into it as BGRA, attaches + damages + commits. If both
-    /// slots are still in flight the frame is skipped (compositor is behind).
+    /// The buffer is allocated at physical pixels (`frame_size * scale`); the
+    /// frame is upscaled into it and the surface's `buffer_scale` tells the
+    /// compositor how to map it back to the logical surface size. Picks the
+    /// first double-buffer slot the compositor has released; if both are in
+    /// flight the frame is skipped (compositor is behind).
     pub fn present(&mut self, frame: &Frame) -> Result<()> {
         if !self.configured {
             return Ok(());
         }
-        let w = frame.width as i32;
-        let h = frame.height as i32;
+        let scale = self.scale.max(1);
+        let w = (frame.width as i32) * scale;
+        let h = (frame.height as i32) * scale;
         if w <= 0 || h <= 0 {
             return Ok(());
         }
-        // Keep the surface size in sync with the frame (pet-driven sizes).
+        // Keep the logical surface size in sync with the frame.
         if self.width != frame.width || self.height != frame.height {
             self.resize(frame.width, frame.height);
         }
@@ -166,7 +221,11 @@ impl WaylandState {
                 return Ok(()); // both in flight — skip this frame
             }
         };
-        blit_rgba_to_bgra(frame, canvas);
+        if scale == 1 {
+            blit_rgba_to_bgra(frame, canvas);
+        } else {
+            blit_rgba_scaled(frame, canvas, scale as u32);
+        }
         // `canvas` borrow ends here; the buffer is then attached + committed.
 
         let buffer = &self.buffers[index];
@@ -178,7 +237,6 @@ impl WaylandState {
         self.surface.damage_buffer(0, 0, w, h);
         self.surface.commit();
         self.conn.flush().context("failed to flush Wayland connection")?;
-        self.next_buffer = 1 - index;
         Ok(())
     }
 
@@ -196,9 +254,9 @@ impl WaylandState {
         self.layer.commit();
     }
 
-    /// (Re)create the SHM pool and double buffer when the size changes.
+    /// (Re)create the SHM pool and double buffer at physical size.
     fn ensure_pool(&mut self, w: i32, h: i32) -> Result<()> {
-        if self.pool.is_some() && self.width == w as u32 && self.height == h as u32 {
+        if self.pool.is_some() && self.pool_w == w && self.pool_h == h {
             return Ok(());
         }
         let stride = w * 4;
@@ -213,10 +271,9 @@ impl WaylandState {
             .map_err(|e| anyhow!("failed to create buffer 1: {e}"))?;
         self.pool = Some(pool);
         self.buffers = [Some(b0), Some(b1)];
-        self.next_buffer = 0;
-        self.width = w as u32;
-        self.height = h as u32;
-        tracing::debug!("SHM pool (re)created: {w}x{h}, stride {stride}");
+        self.pool_w = w;
+        self.pool_h = h;
+        tracing::debug!("SHM pool (re)created: {w}x{h} (physical)");
         Ok(())
     }
 }
@@ -251,6 +308,28 @@ pub fn parse_anchor(s: &str) -> Result<Anchor> {
     Ok(a)
 }
 
+/// Blit an RGBA frame upscaled by `scale` (integer) into a BGRA canvas.
+fn blit_rgba_scaled(frame: &Frame, dst: &mut [u8], scale: u32) {
+    let Some(buf) = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
+    else {
+        return;
+    };
+    let resized = image::imageops::resize(
+        &buf,
+        frame.width * scale,
+        frame.height * scale,
+        image::imageops::FilterType::Triangle,
+    );
+    let raw = resized.into_raw();
+    let n = raw.len().min(dst.len());
+    for (chunk, out) in raw[..n].chunks_exact(4).zip(dst[..n].chunks_exact_mut(4)) {
+        out[0] = chunk[2];
+        out[1] = chunk[1];
+        out[2] = chunk[0];
+        out[3] = chunk[3];
+    }
+}
+
 // --- sctk handler implementations (all on `App`) --------------------------
 
 impl CompositorHandler for App {
@@ -259,8 +338,15 @@ impl CompositorHandler for App {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_surface::WlSurface,
-        _: i32,
+        new_factor: i32,
     ) {
+        let scale = new_factor.max(1);
+        if self.wayland.scale != scale {
+            self.wayland.scale = scale;
+            // Buffer scale applies to the next committed buffer.
+            let _ = self.wayland.surface.set_buffer_scale(scale);
+            self.request_redraw();
+        }
     }
 
     fn transform_changed(
@@ -314,10 +400,12 @@ impl OutputHandler for App {
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        // M1: track outputs by name (xdg-output) for multi-monitor placement.
+        self.maybe_bind_named_output();
     }
 
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.maybe_bind_named_output();
+    }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
@@ -351,9 +439,10 @@ impl ProvidesRegistryState for App {
         &mut self.wayland.registry_state
     }
 
-    // Only multi-instance globals (outputs, seats) are handled at runtime;
-    // compositor/shm/layer-shell are bound once at connect time.
-    registry_handlers![OutputState];
+    // Multi-instance globals (outputs) plus the foreign-toplevel manager
+    // (fullscreen auto-hide) are handled at runtime; compositor/shm/
+    // layer-shell are bound once at connect time.
+    registry_handlers![OutputState, FullscreenTracker];
 }
 
 delegate_compositor!(App);

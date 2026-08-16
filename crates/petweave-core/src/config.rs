@@ -23,6 +23,8 @@ pub struct General {
     pub fps: u32,
     /// Log level: trace|debug|info|warn|error.
     pub log_level: String,
+    /// How often to sample CPU/memory and emit `Event::System` (0 = off).
+    pub sysinfo_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +55,10 @@ pub struct RenderConfig {
     pub margin_right: i32,
     pub margin_bottom: i32,
     pub margin_left: i32,
+    /// Output to bind the surface to, by name (xdg-output). Empty = auto.
+    pub output: String,
+    /// Never auto-hide the pet for fullscreen windows.
+    pub disable_fullscreen_hide: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +89,14 @@ pub struct BongoConfig {
     pub hand_mapping: bool,
     /// Flip the cat horizontally (and swap the paw mapping).
     pub mirror_x: bool,
+    /// Sleep after this many seconds without a key press (0 = disabled).
+    pub idle_sleep_timeout_secs: u64,
+    /// Enable the scheduled sleep window (wall-clock).
+    pub enable_scheduled_sleep: bool,
+    /// Sleep window start, "HH:MM" (24h).
+    pub sleep_begin: String,
+    /// Sleep window end, "HH:MM" (24h).
+    pub sleep_end: String,
 }
 
 impl Default for Config {
@@ -101,6 +115,7 @@ impl Default for General {
         Self {
             fps: 60,
             log_level: "info".to_string(),
+            sysinfo_interval_secs: 5,
         }
     }
 }
@@ -127,6 +142,8 @@ impl Default for RenderConfig {
             margin_right: 0,
             margin_bottom: 16,
             margin_left: 0,
+            output: String::new(),
+            disable_fullscreen_hide: false,
         }
     }
 }
@@ -151,6 +168,10 @@ impl Default for BongoConfig {
             keypress_duration_ms: 100,
             hand_mapping: true,
             mirror_x: false,
+            idle_sleep_timeout_secs: 0,
+            enable_scheduled_sleep: false,
+            sleep_begin: "22:00".to_string(),
+            sleep_end: "06:00".to_string(),
         }
     }
 }
@@ -203,8 +224,38 @@ impl Config {
         if !(10..=500).contains(&self.pet.bongo.cat_height) {
             return Err(Error::Config("pet.bongo.cat_height must be in 10..=500".into()));
         }
+        for (name, t) in [
+            ("pet.bongo.sleep_begin", &self.pet.bongo.sleep_begin),
+            ("pet.bongo.sleep_end", &self.pet.bongo.sleep_end),
+        ] {
+            if !is_hhmm(t) {
+                return Err(Error::Config(format!("{name} must be \"HH:MM\" (24h), got {t:?}")));
+            }
+        }
         Ok(())
     }
+}
+
+/// Validate a "HH:MM" clock string.
+pub fn is_hhmm(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 5
+        && b[2] == b':'
+        && b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && b[3].is_ascii_digit()
+        && b[4].is_ascii_digit()
+        && (b[0] - b'0') * 10 + (b[1] - b'0') < 24
+        && (b[3] - b'0') * 10 + (b[4] - b'0') < 60
+}
+
+/// Parse "HH:MM" into minutes since midnight.
+pub fn hhmm_to_minutes(s: &str) -> Option<u32> {
+    if !is_hhmm(s) {
+        return None;
+    }
+    let b = s.as_bytes();
+    Some(((b[0] - b'0') as u32) * 600 + ((b[1] - b'0') as u32) * 60 + (b[3] - b'0') as u32 * 10 + (b[4] - b'0') as u32)
 }
 
 #[cfg(test)]
@@ -267,6 +318,34 @@ mod tests {
         let cfg = Config {
             pet: PetConfig {
                 kind: "shimeji".into(),
+                ..PetConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn sleep_clock_parsing() {
+        assert!(is_hhmm("22:00"));
+        assert!(is_hhmm("06:30"));
+        assert!(!is_hhmm("24:00"));
+        assert!(!is_hhmm("6:00"));
+        assert!(!is_hhmm("12:60"));
+        assert!(!is_hhmm("1200"));
+        assert_eq!(hhmm_to_minutes("22:00"), Some(22 * 60));
+        assert_eq!(hhmm_to_minutes("00:05"), Some(5));
+        assert_eq!(hhmm_to_minutes("bad"), None);
+    }
+
+    #[test]
+    fn rejects_bad_sleep_window() {
+        let cfg = Config {
+            pet: PetConfig {
+                bongo: BongoConfig {
+                    sleep_begin: "25:00".into(),
+                    ..BongoConfig::default()
+                },
                 ..PetConfig::default()
             },
             ..Config::default()

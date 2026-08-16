@@ -8,7 +8,7 @@
 | 里程碑 | 状态 | 说明 |
 |---|---|---|
 | M0 项目骨架 | ✅ 完成 | 编译通过、单测通过、niri 上实测可显示 |
-| M1 BongoCat 移植 | 🔄 进行中 | 核心动画已移植（PNG 路线，RSS 5.7MB）；热插拔/全屏隐藏/多显示器等未完成 |
+| M1 BongoCat 移植 | ✅ 完成 | 爪击动画/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
 | M2 SDK / 角色包 | ⏳ 未开始 | |
 | M3 交互升级 | ⏳ 未开始 | |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
@@ -41,14 +41,21 @@
 - [x] 动画驱动与空闲休眠：`Pet::tick` + `next_deadline` 自适应睡眠（空闲阻塞
       在 poll，~0% CPU）
 - [x] 资源指标基线：单宠物 RSS ≈ **5.7MB**（niri，release，264×110 surface）
-- [ ] 键盘热插拔：5s 快速重试 → 30s 周期扫描
-- [ ] 全屏自动隐藏：`wlr-foreign-toplevel-management` / `ext-foreign-toplevel-list` + KWin 兜底
-- [ ] 多显示器：`xdg-output` 按名称定位、HiDPI 逻辑/物理尺寸换算
-- [ ] 闲置/定时睡眠模式（含 sleeping 帧；PNG 资产缺该帧，等 SVG 路线）
-- [ ] 配置热重载三段式：属性级 → 缓冲区级 → 全重建
-- [ ] 系统感知：`sysinfo` CPU/内存 → `Event::System`，宠物可反应
-- [ ] `petweave doctor` 权限工具（udev uaccess 一键安装）
-- [ ] PID 文件单例 + `$XDG_RUNTIME_DIR` 安全落盘
+- [x] 键盘热插拔：5s 快速重试 → 30s 周期扫描（`input.rs` 管理器线程），
+      设备过滤（字母键集合校验，排除音频/媒体按键设备）
+- [x] 全屏自动隐藏：`wlr-foreign-toplevel-management`（activated+fullscreen
+      状态、按输出判定 + KDE 式全局兜底）；layer=overlay 或
+      `disable_fullscreen_hide` 时跳过。注：niri 未实现该协议，优雅降级
+- [x] 多显示器：`xdg-output` 按名称绑定 surface（`render.output`），HiDPI
+      buffer_scale 整数缩放（逻辑尺寸 → 物理缓冲）
+- [x] 闲置/定时睡眠模式：`idle_sleep_timeout_secs` + `enable_scheduled_sleep`
+      （HH:MM 窗口）；睡眠帧由 idle 帧调暗合成（等 SVG 资产后替换）
+- [x] 配置热重载三段式：属性级（layer/anchor/margins）→ 缓冲区级（尺寸）→
+      宠物级（bongo 参数/cat_height）；kind/output 变更提示重启
+- [x] 系统感知：`sysinfo` 定时采样 → `Event::System`（CPU/内存快照）
+- [x] `petweave doctor` 权限工具（输入权限检测 + udev uaccess 规则安装 `--apply`）
+- [x] PID 文件单例：flock 型 `$XDG_RUNTIME_DIR/petweave.pid`（防 stale 竞态）
+- [x] `--preview` 帧导出、`list-devices` 子命令、日志级别跟随配置
 
 ## M2 SDK / 角色包（核心差异化：从"应用"到"平台"）
 

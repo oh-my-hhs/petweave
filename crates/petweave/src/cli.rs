@@ -1,0 +1,45 @@
+//! Command line interface.
+
+use std::path::PathBuf;
+
+use clap::Parser;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "petweave",
+    version,
+    about = "PetWeave — a Wayland desktop pet framework (host runtime)"
+)]
+pub struct Cli {
+    /// Path to a TOML config file.
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
+
+    /// List detected keyboard devices and exit.
+    #[arg(long)]
+    pub list_devices: bool,
+
+    /// Override pet surface width.
+    #[arg(long)]
+    pub width: Option<u32>,
+
+    /// Override pet surface height.
+    #[arg(long)]
+    pub height: Option<u32>,
+
+    /// Override the animation FPS cap.
+    #[arg(long)]
+    pub fps: Option<u32>,
+
+    /// Explicit input device path (repeatable, e.g. /dev/input/event4).
+    #[arg(long = "device")]
+    pub devices: Vec<String>,
+
+    /// Disable automatic keyboard detection.
+    #[arg(long)]
+    pub no_auto_input: bool,
+
+    /// Verbose (debug) logging.
+    #[arg(short, long)]
+    pub verbose: bool,
+}

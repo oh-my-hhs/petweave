@@ -1,0 +1,41 @@
+# PetWeave example configuration.
+# Copy to ~/.config/petweave/petweave.toml and adjust.
+# All keys are optional — every section/field falls back to its default.
+
+[general]
+# Animation/render loop target FPS cap (1..=240).
+fps = 60
+# Log level: trace | debug | info | warn | error.
+log_level = "info"
+
+[input]
+# Master switch for global keyboard capture.
+enabled = true
+# Auto-detect keyboards under /dev/input/event*.
+auto_detect = true
+# Explicit device paths; wins over auto-detection for these devices.
+# Find yours with: petweave list-devices
+devices = []
+# Hotplug rescan interval in seconds (reserved; M1).
+scan_interval_secs = 30
+
+[render]
+# Pet surface size in pixels.
+width = 256
+height = 256
+# wlr-layer-shell layer: background | bottom | top | overlay.
+layer = "top"
+# Anchor: combination of top | bottom | left | right (| separated).
+anchor = "bottom"
+# Margins from the anchored edge(s).
+margin_top = 16
+margin_right = 0
+margin_bottom = 16
+margin_left = 0
+
+[pet]
+# Built-in demo pet (real role packages arrive with M2).
+name = "demo"
+enabled = true
+# Base color as #rrggbb or #rrggbbaa. The pet flashes white on keypress.
+color = "#ff6699"

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/petweave-core", "crates/petweave"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+description = "PetWeave — a Wayland desktop pet framework"
+
+[workspace.dependencies]
+petweave-core = { path = "crates/petweave-core" }
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.4"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+wayland-client = "0.31.13"
+smithay-client-toolkit = "0.20.0"
+calloop = { version = "0.14.4", features = ["signals"] }
+calloop-wayland-source = "0.4.1"
+nix = { version = "0.31.2", features = ["fs", "poll", "signal"] }
+libc = "0.2.189"

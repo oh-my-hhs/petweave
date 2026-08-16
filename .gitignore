@@ -1,0 +1,5 @@
+/target
+/.scratch
+/.cargo-home
+/Reference
+*.log

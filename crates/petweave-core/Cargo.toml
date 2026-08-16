@@ -1,0 +1,12 @@
+[package]
+name = "petweave-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PetWeave core: config, events, pet trait and render types shared by the host and pet SDKs"
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true

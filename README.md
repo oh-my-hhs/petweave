@@ -1,12 +1,12 @@
 # PetWeave
 
-一个 **Wayland 原生的桌宠框架**：运行时 + SDK 约定，让"做一个桌宠"变成"写一个角色包"，预置 BongoCat 作为开箱即用的第一个宠物。
+一个 **Wayland 原生的桌宠框架**：运行时 + SDK 约定，让"做一个桌宠"变成"写一个角色包"。内置 BongoCat，支持零代码精灵宠物与 Lua 脚本宠物。
 
 - 极轻量：实测空闲 RSS ≈ **5MB**、空闲 CPU ~0%（无 WebView/GTK/Qt 运行时）
 - 原生 Wayland（`wlr-layer-shell`）：定位、全屏自动隐藏、多显示器、HiDPI
 - 配置热重载、键盘热插拔、进程单例、优雅退出
-- 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植）
-- **角色包**：声明式精灵宠物（零代码），`install/uninstall/list/package/import` 工具链，见 [docs/PACKAGES.md](docs/PACKAGES.md)
+- 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植，SVG 睡眠帧）
+- **角色包**：`.petweave` 格式 + 声明式精灵宠物（零代码）+ **Lua 脚本宠物**（mlua 沙箱、气泡对话），工具链 `install/uninstall/list/package/import`，教程见 [docs/PACKAGES.md](docs/PACKAGES.md)
 
 创新点说明见 [Innovation.md](Innovation.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md)
 
@@ -14,7 +14,7 @@
 
 ```bash
 cargo build --release      # 产物: target/release/petweave
-cargo test                 # 运行测试（32 项）
+cargo test                 # 运行测试（55 项）
 ```
 
 > **离线构建（本机）**：网络不可用且系统 cargo 缓存只读时，使用仓库内的 `.cargo-home`：
@@ -26,6 +26,7 @@ cargo test                 # 运行测试（32 项）
 - Rust 1.80+（stable）
 - Wayland 合成器（支持 `wlr-layer-shell`）：niri / Hyprland / Sway / KWin(Plasma 6) 等
 - 键盘监听需要 `/dev/input` 权限（见下方「权限」）
+- 角色包的气泡文字需要系统字体（AdwaitaSans / DejaVuSans 等，缺失时只显示气泡不显示文字）
 
 ## 运行
 
@@ -33,18 +34,102 @@ cargo test                 # 运行测试（32 项）
 
 ```bash
 ./target/release/petweave                          # 启动 demo 宠物（默认配置）
-./target/release/petweave --pet bongo              # 启动 BongoCat（默认从仓库 assets/ 加载）
+./target/release/petweave --pet bongo              # 启动 BongoCat
 ./target/release/petweave -c ~/.config/petweave/petweave.toml
 ```
 
 启动后宠物显示在屏幕底部（默认 anchor=bottom，margin 16px）。**BongoCat 会在你按键时击打对应爪子**——按键盘左侧的键（A/W/Q/…）动左爪，右侧（L/;/Space/…）动右爪，同时按则双爪齐下。
+
+### 使用样例
+
+#### 样例 A：开箱即用
+
+```bash
+petweave --pet demo               # 粉色方块，按键闪白
+petweave --pet bongo              # BongoCat：按键击爪（尺寸由 cat_height 配置）
+# 配置 cat_height 与睡眠（bongo 的尺寸/睡眠不走 --width 参数）：
+cat > ~/.config/petweave/petweave.toml <<'EOF'
+[pet]
+kind = "bongo"
+[pet.bongo]
+cat_height = 200
+idle_sleep_timeout_secs = 300     # 闲置 5 分钟入睡（SVG 睡眠帧）
+EOF
+petweave
+```
+
+#### 样例 B：安装角色包并运行（bongo-sprite 全流程）
+
+```bash
+# 1) 安装仓库自带的预置包（目录或 .petweave 文件均可）
+petweave install packages/bongo-sprite
+petweave install packages/blinky
+petweave list                     # 查看已安装
+
+# 2) 写配置指向它
+cat > ~/.config/petweave/petweave.toml <<'EOF'
+[pet]
+kind = "sprite"
+package = "bongo-sprite"
+name = "bongo"
+EOF
+
+# 3) 运行（配置修改会自动热重载）
+petweave
+
+# 4) 打包分发 / 卸载重装
+petweave package packages/blinky -o blinky.petweave
+petweave uninstall blinky
+petweave install blinky.petweave   # 从 zip 包安装
+```
+
+效果：与内置 BongoCat 相同的爪击行为，但完全由 `pet.toml` 声明驱动（零代码）。
+
+#### 样例 C：Lua 脚本宠物（lua-demo）
+
+```bash
+petweave install packages/lua-demo
+cat > ~/.config/petweave/petweave.toml <<'EOF'
+[pet]
+kind = "lua"
+package = "lua-demo"
+name = "lua"
+EOF
+petweave
+```
+
+`packages/lua-demo/main.lua` 的行为：启动时气泡问候 → 按键播放 flash 动画并气泡显示键码 → CPU 超过 90% 时气泡提醒：
+
+```lua
+function init()
+    pet.speak("hi! press keys")
+end
+function on_key(code, pressed)
+    if pressed then
+        pet.play("flash")
+        pet.speak("key " .. code)
+    end
+end
+function on_system(cpu, mem)
+    if cpu > 90 then pet.speak("cpu is hot!") end
+end
+```
+
+#### 样例 D：开发调试
+
+```bash
+petweave --preview out.png        # 无需 Wayland，把宠物当前帧导出为 PNG
+petweave list-devices             # 识别键盘设备
+petweave doctor                    # 环境体检（配置/会话/权限）
+petweave import oneko.xpm -o oneko.png   # Oneko 的 XPM 精灵表 → PNG
+```
 
 ### 命令行参数
 
 | 参数 | 说明 | 示例 |
 |---|---|---|
 | `-c, --config <PATH>` | 指定 TOML 配置文件；未指定时尝试 `$XDG_CONFIG_HOME/petweave/petweave.toml` | `-c petweave.toml` |
-| `--pet <demo\|bongo>` | 覆盖 `pet.kind`，选择内置宠物 | `--pet bongo` |
+| `--pet <demo\|bongo\|sprite\|lua>` | 覆盖 `pet.kind`（sprite/lua 还需配置 `pet.package`） | `--pet bongo` |
 | `--width <N>` | 覆盖表面宽度（逻辑像素） | `--width 300` |
 | `--height <N>` | 覆盖表面高度 | `--height 150` |
 | `--fps <N>` | 覆盖动画帧率上限（1–240） | `--fps 60` |
@@ -58,12 +143,17 @@ cargo test                 # 运行测试（32 项）
 
 | 子命令 | 说明 |
 |---|---|
-| `petweave doctor` | 诊断环境：配置文件、Wayland 会话、键盘权限；`--apply` 一键安装 udev uaccess 规则（需要 root/sudo） |
+| `petweave doctor [--apply]` | 诊断环境（配置/会话/键盘权限）；`--apply` 一键安装 udev uaccess 规则（需 root/sudo） |
 | `petweave list-devices` | 同 `--list-devices`，列出键盘设备 |
+| `petweave install <目录或.petweave>` | 安装角色包到本地仓库（`$XDG_DATA_HOME/petweave/pets/`） |
+| `petweave uninstall <名字>` | 卸载角色包 |
+| `petweave list` | 列出已安装的角色包 |
+| `petweave package <目录> -o <输出>` | 把包目录打包成 `.petweave` zip |
+| `petweave import <xpm> -o <png>` | Oneko 风格 XPM 精灵表 → PNG |
 
 ### 权限
 
-BongoCat 等宠物读取 `/dev/input/event*` 需要权限，两种方式任选：
+宠物读取 `/dev/input/event*` 需要权限，两种方式任选：
 
 ```bash
 # 方式 A（推荐）：udev uaccess 规则，随登录会话授权
@@ -96,7 +186,7 @@ devices = []                   # 显式设备路径（优先于自动探测）
 scan_interval_secs = 30        # 热插拔重扫间隔；未找到设备时 5s 快速重试
 
 [render]
-width = 256                    # 表面宽度（逻辑像素；bongo 会用自身宽高比覆盖）
+width = 256                    # 表面宽度（逻辑像素；bongo/角色包会用自身尺寸覆盖）
 height = 256
 layer = "top"                  # background|bottom|top|overlay
 anchor = "bottom"              # top|bottom|left|right 的任意组合（| 分隔）
@@ -110,31 +200,33 @@ disable_fullscreen_hide = false  # 全屏时也保持可见
 [pet]
 name = "bongo"                 # 宠物实例名（日志/ID）
 enabled = true
-kind = "demo"                  # demo | bongo（角色包 M2 起支持）
+kind = "demo"                  # demo | bongo | sprite | lua
+package = ""                   # 角色包名或目录路径（kind = sprite/lua 时必填）
 color = "#ff6699"              # demo 宠物基础色（#rrggbb 或 #rrggbbaa）
 
 [pet.bongo]                    # 仅 kind = "bongo" 时生效
-assets_dir = "assets/bongocat" # 四帧 PNG 所在目录（找不到时回退到源码树）
+assets_dir = "assets/bongocat" # 素材目录（PNG 帧 + bongo-sleeping.svg）
 cat_height = 110               # 猫高（像素），宽按素材宽高比自动
 keypress_duration_ms = 100     # 按下后爪子保持时长（毫秒）
 hand_mapping = true            # 按物理位置映射左右爪
 mirror_x = false               # 水平翻转（并交换左右爪）
-idle_sleep_timeout_secs = 0    # 闲置 N 秒后入睡（变暗），0=关闭
+idle_sleep_timeout_secs = 0    # 闲置 N 秒后入睡（SVG 睡眠帧），0=关闭
 enable_scheduled_sleep = false # 定时睡眠窗口（墙钟）
 sleep_begin = "22:00"          # 睡眠窗口开始（24h）
 sleep_end = "06:00"            # 睡眠窗口结束（24h）
 ```
 
-完整示例见 [`petweave.toml.example`](petweave.toml.example)。
+完整示例见 [`petweave.toml.example`](petweave.toml.example)；角色包清单（`pet.toml`）格式见 [docs/PACKAGES.md](docs/PACKAGES.md)。
 
 ### 行为说明
 
 - **热重载**：改 `[render]` 的 layer/anchor/margins 与 `[pet]`/`[pet.bongo]` 参数即时生效（bongo 改 `cat_height` 会重新缩放）；改 `pet.kind` 或 `render.output` 需重启。
-- **睡眠**：`idle_sleep_timeout_secs` 到期或处于定时窗口时显示"睡着"的猫（当前为调暗的占位帧）；定时睡眠期间按键被忽略，闲置睡眠按键即可唤醒。
+- **睡眠**：`idle_sleep_timeout_secs` 到期或处于定时窗口时显示"睡着"的猫（官方 SVG 素材栅格化）；定时睡眠期间按键被忽略，闲置睡眠按键即可唤醒。
 - **全屏隐藏**：检测到（激活的）全屏窗口时自动隐藏宠物；`layer = "overlay"` 或 `disable_fullscreen_hide = true` 可跳过。注意：niri 未实现 `wlr-foreign-toplevel-management`，此功能在其上不生效（优雅降级，始终显示）。
 - **单例**：同账号同时只能运行一个实例（flock 型 PID 文件 `$XDG_RUNTIME_DIR/petweave.pid`）。
 - **多显示器/HiDPI**：`render.output` 指定显示器名称（`wlr-randr` / `niri msg outputs` 查看）；整数倍缩放按 buffer_scale 物理渲染，高分屏下清晰。
-- **系统感知**：`sysinfo_interval_secs` 间隔向宠物推送 CPU/内存快照（`Event::System`，当前内置宠物暂未响应，供角色包/AI 接口使用）。
+- **系统感知**：`sysinfo_interval_secs` 间隔向宠物推送 CPU/内存快照；Lua 宠物可写 `on_system(cpu, mem)` 响应（如 CPU 过载提醒）。
+- **Lua 沙箱**：脚本运行在 mlua 白名单环境（无 io/os/package/debug），指令预算防死循环，脚本报错只记日志。
 
 ## 故障排查
 
@@ -142,6 +234,7 @@ sleep_end = "06:00"            # 睡眠窗口结束（24h）
 |---|---|
 | `list-devices` / `doctor` 显示没有键盘或权限拒绝 | 按「权限」一节配置，然后重新登录会话 |
 | 宠物不响应按键 | 运行 `petweave list-devices` 确认设备被识别；在 `[input] devices` 里显式指定 |
+| 角色包加载失败（`failed to load ... pet`） | 运行 `petweave list` 确认已安装；包名填错或目录路径不对时按提示修正；`--preview` 可在无 Wayland 下快速验证 |
 | 提示 `another petweave instance is already running` | 已有一个实例在运行（或 `$XDG_RUNTIME_DIR` 异常） |
 | 启动报 `wlr-layer-shell not available` | 当前合成器不支持 layer-shell（如 GNOME/Mutter），见兼容性说明 |
 | 找不到猫素材 | 在仓库根目录运行，或把 `assets/bongocat` 复制到运行目录并配置 `assets_dir` |
@@ -150,9 +243,10 @@ sleep_end = "06:00"            # 睡眠窗口结束（24h）
 
 ```
 crates/
-  petweave-core/   共享类型：config / events / Pet trait / render Frame
-  petweave/        主机：cli / app(事件循环) / platform / graphics / runtime
-assets/bongocat/   内置 BongoCat 四帧素材（MIT，署名见目录内 README）
-docs/              技术栈分析 + 实现计划 + Live2D 路线
+  petweave-core/   共享类型：config / events / manifest / Pet trait / render Frame
+  petweave/        主机：cli / app(事件循环) / package / platform / graphics / runtime
+assets/bongocat/   内置 BongoCat 素材（PNG 帧 + sleeping SVG，MIT，署名见目录内 README）
+packages/          预置角色包：bongo-sprite（声明式 BongoCat）/ blinky（网格示例）/ lua-demo（Lua 示例）
+docs/              技术栈分析 + 实现计划 + 角色包教程 + Live2D 路线
 petweave.toml.example
 ```

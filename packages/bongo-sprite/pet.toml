@@ -15,7 +15,7 @@ surface_width = 264
 surface_height = 110
 
 [animations.idle]
-sheet = "sprites/both-up.png"
+sheet = "sprites/bongo-cat-both-up.png"
 cell_width = 864
 cell_height = 360
 frames = [0]
@@ -23,21 +23,21 @@ fps = 1
 loop = true
 
 [animations.paw-left]
-sheet = "sprites/left-down.png"
+sheet = "sprites/bongo-cat-left-down.png"
 cell_width = 864
 cell_height = 360
 frames = [0]
 fps = 8
 
 [animations.paw-right]
-sheet = "sprites/right-down.png"
+sheet = "sprites/bongo-cat-right-down.png"
 cell_width = 864
 cell_height = 360
 frames = [0]
 fps = 8
 
 [animations.both-down]
-sheet = "sprites/both-down.png"
+sheet = "sprites/bongo-cat-both-down.png"
 cell_width = 864
 cell_height = 360
 frames = [0]

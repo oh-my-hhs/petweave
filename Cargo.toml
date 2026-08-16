@@ -33,3 +33,10 @@ mlua = { version = "0.11.5", features = ["lua54", "vendored", "send"] }
 resvg = "0.45.1"
 ab_glyph = "0.2.32"
 tiny-skia = "0.11.4"
+
+# Release hardening: LTO, panic=abort, stripped, single codegen unit.
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

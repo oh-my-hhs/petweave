@@ -28,9 +28,9 @@
 - [x] 单元测试 13 项（配置解析/校验、Frame 操作、BGRA 转换、锚点/层级解析、颜色解析）
 - [x] 示例配置 `petweave.toml.example`
 - [x] 离线构建支持（依赖锁定 + vendored Lua，`cargo build --offline` 可复现）
-- [ ] `petweave doctor` 权限体检工具（udev uaccess 一键安装）
-- [ ] PID 文件单例 + `$XDG_RUNTIME_DIR` 安全落盘
-- [ ] 发布加固：LTO + strip + `panic=abort`，测量二进制体积
+- [x] `petweave doctor` 权限体检工具（udev uaccess 一键安装）—— 在 M1 完成
+- [x] PID 文件单例 + `$XDG_RUNTIME_DIR` 安全落盘 —— 在 M1 完成（flock 型）
+- [x] 发布加固：LTO + codegen-units=1 + `panic=abort` + strip，二进制 8.8MB → 5.4MB
 
 ## M1 BongoCat 移植（目标：在 niri/Hyprland 复现 wayland-bongocat 体验）
 

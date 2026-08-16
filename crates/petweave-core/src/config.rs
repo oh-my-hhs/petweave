@@ -6,6 +6,57 @@ use serde::Deserialize;
 
 use crate::error::Error;
 
+/// How the user can move the pet surface (tray "移动模式" switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MoveMode {
+    /// Dragging moves the pet; no gravity/collision physics.
+    Drag,
+    /// Dragging + gravity/collision physics: the pet falls and settles.
+    #[default]
+    Physics,
+    /// The pet is pinned; it cannot be moved at all.
+    Fixed,
+}
+
+impl MoveMode {
+    /// All modes in radio/menu order.
+    pub const ALL: [MoveMode; 3] = [MoveMode::Drag, MoveMode::Physics, MoveMode::Fixed];
+
+    /// Parse a config string ("drag"|"physics"|"fixed").
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "drag" => Some(MoveMode::Drag),
+            "physics" => Some(MoveMode::Physics),
+            "fixed" => Some(MoveMode::Fixed),
+            _ => None,
+        }
+    }
+
+    /// Config-file spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MoveMode::Drag => "drag",
+            MoveMode::Physics => "physics",
+            MoveMode::Fixed => "fixed",
+        }
+    }
+
+    /// Tray menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            MoveMode::Drag => "拖动模式",
+            MoveMode::Physics => "物理模式",
+            MoveMode::Fixed => "固定模式",
+        }
+    }
+}
+
+impl std::fmt::Display for MoveMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Top-level configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -63,7 +114,11 @@ pub struct RenderConfig {
     pub disable_fullscreen_hide: bool,
     /// Click-through outside the pet's opaque shape (input region = alpha bbox).
     pub click_through: bool,
-    /// Gravity/collision physics after the pet is dragged (M3).
+    /// Movement mode: "drag" | "physics" | "fixed". Empty = derive from the
+    /// legacy `physics` bool (M3).
+    pub mode: String,
+    /// Deprecated movement switch, only read when `mode` is empty:
+    /// false behaves like `mode = "drag"`.
     pub physics: bool,
 }
 
@@ -154,6 +209,7 @@ impl Default for RenderConfig {
             output: String::new(),
             disable_fullscreen_hide: false,
             click_through: true,
+            mode: String::new(),
             physics: true,
         }
     }
@@ -185,6 +241,18 @@ impl Default for BongoConfig {
             sleep_begin: "22:00".to_string(),
             sleep_end: "06:00".to_string(),
         }
+    }
+}
+
+impl RenderConfig {
+    /// Resolve the effective movement mode: an explicit `mode` wins; an
+    /// empty `mode` falls back to the legacy `physics` bool.
+    pub fn move_mode(&self) -> MoveMode {
+        MoveMode::parse(&self.mode).unwrap_or(if self.physics {
+            MoveMode::Physics
+        } else {
+            MoveMode::Drag
+        })
     }
 }
 
@@ -224,6 +292,12 @@ impl Config {
                     "render.layer must be one of background|bottom|top|overlay, got {other:?}"
                 )));
             }
+        }
+        if !self.render.mode.is_empty() && MoveMode::parse(&self.render.mode).is_none() {
+            return Err(Error::Config(format!(
+                "render.mode must be one of drag|physics|fixed, got {:?}",
+                self.render.mode
+            )));
         }
         match self.pet.kind.as_str() {
             "demo" | "bongo" | "sprite" | "lua" => {}
@@ -304,6 +378,27 @@ mod tests {
         // Missing sections fall back to defaults.
         assert_eq!(cfg.general.fps, 60);
         assert_eq!(cfg.pet.name, "demo");
+    }
+
+    #[test]
+    fn move_mode_resolution_and_validation() {
+        let mut r = RenderConfig::default();
+        assert_eq!(r.move_mode(), MoveMode::Physics, "default physics=true");
+        r.physics = false;
+        assert_eq!(r.move_mode(), MoveMode::Drag, "legacy physics=false");
+        r.mode = "fixed".into();
+        assert_eq!(r.move_mode(), MoveMode::Fixed, "explicit mode wins");
+        r.mode = "drag".into();
+        assert_eq!(r.move_mode(), MoveMode::Drag);
+
+        let cfg = Config {
+            render: RenderConfig {
+                mode: "float".into(),
+                ..RenderConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_err(), "invalid mode rejected");
     }
 
     #[test]

@@ -10,6 +10,7 @@ use calloop_wayland_source::WaylandSource;
 
 use petweave_core::render::Frame;
 use petweave_core::{Config, Event};
+use petweave_core::config::MoveMode;
 
 use smithay_client_toolkit::reexports::client::protocol::{wl_output::WlOutput, wl_pointer, wl_seat};
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
@@ -34,6 +35,8 @@ pub enum HostCommand {
     ReloadConfig,
     /// Toggle pet visibility (tray left-click / menu).
     ToggleVisible,
+    /// Switch the movement mode (tray 移动模式 menu).
+    SetMoveMode(MoveMode),
     /// Quit the host (tray menu).
     Quit,
 }
@@ -118,6 +121,8 @@ pub struct App {
     pub fullscreen: FullscreenTracker,
     /// Whether the pet is currently visible (tray toggle).
     pub visible: bool,
+    /// Current movement mode (drag / physics / fixed); tray-switchable.
+    pub move_mode: MoveMode,
     /// Shared tray state (visibility mirror for the menu label).
     pub tray_shared: Option<std::sync::Arc<std::sync::Mutex<TrayShared>>>,
     /// Tray service handle (kept alive; refreshed on visibility changes).
@@ -231,8 +236,46 @@ impl App {
         }
         self.runtime
             .reload(&cfg.pet, (cfg.render.width, cfg.render.height));
+        let new_mode = cfg.render.move_mode();
         self.config = cfg;
+        // The config file is the source of truth again after a reload; the
+        // tray pick is a runtime override until then.
+        self.set_move_mode(new_mode);
         self.needs_redraw = true;
+    }
+
+    /// Switch the movement mode (tray menu / config reload).
+    ///
+    /// Any in-progress drag or physics is cancelled. Entering physics mode
+    /// lets the pet fall from wherever it currently sits; entering drag or
+    /// fixed mode freezes it in place.
+    fn set_move_mode(&mut self, mode: MoveMode) {
+        if self.move_mode == mode {
+            return;
+        }
+        tracing::info!("move mode: {mode}");
+        self.move_mode = mode;
+        self.drag = None;
+        self.pending_position = None;
+        self.physics = (mode == MoveMode::Physics).then(|| {
+            let (w, h) = self.current_surface_size();
+            let (x, y) = self.wayland.surface_position(w, h);
+            Physics {
+                x,
+                y,
+                vx: 0.0,
+                vy: 0.0,
+                w,
+                h,
+                resting: false,
+            }
+        });
+        if let Some(shared) = &self.tray_shared {
+            shared.lock().unwrap().mode = mode;
+        }
+        if let Some(handle) = &self.tray_handle {
+            let _ = handle.update(|_| {});
+        }
     }
 
     /// Convert an sctk pointer event into a pet event + drag update.
@@ -258,7 +301,9 @@ impl App {
             PointerEventKind::Press { button, .. } => {
                 pet_ev.button = *button;
                 pet_ev.pressed = true;
-                if *button == 272 {
+                // Fixed mode pins the pet: no drag, but clicks still reach
+                // the pet runtime (reactions keep working).
+                if *button == 272 && self.move_mode != MoveMode::Fixed {
                     // Left button: start a potential drag from the current spot.
                     let (w, h) = self.current_surface_size();
                     let (bx, by) = self.wayland.surface_position(w, h);
@@ -279,8 +324,9 @@ impl App {
                 pet_ev.pressed = false;
                 if *button == 272 {
                     if let Some(drag) = self.drag.take() {
-                        // A real drag (not a click) drops the pet into physics.
-                        if drag.moved && self.config.render.physics {
+                        // A real drag (not a click) drops the pet: physics
+                        // mode lets it fall, drag mode leaves it in place.
+                        if drag.moved && self.move_mode == MoveMode::Physics {
                             let (w, h) = self.current_surface_size();
                             self.physics = Some(Physics {
                                 x: drag.base_x + (x - drag.start_x),
@@ -431,6 +477,7 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
     let mut event_loop = EventLoop::<App>::try_new().context("failed to create event loop")?;
     let loop_handle = event_loop.handle();
 
+    let move_mode = config.render.move_mode();
     let mut app = App {
         config,
         config_path,
@@ -439,6 +486,7 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         runtime,
         fullscreen: FullscreenTracker::new(),
         visible: true,
+        move_mode,
         tray_shared: None,
         tray_handle: None,
         pointer: None,
@@ -516,6 +564,7 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
                         );
                         app.needs_redraw = true;
                     }
+                    HostCommand::SetMoveMode(mode) => app.set_move_mode(mode),
                     HostCommand::Quit => {
                         tracing::info!("quit requested from tray");
                         app.exit = true;
@@ -658,6 +707,7 @@ fn spawn_tray(
 
     let shared = std::sync::Arc::new(std::sync::Mutex::new(TrayShared {
         visible: true,
+        mode: app.move_mode,
     }));
     let tray = PetTray::new(
         shared.clone(),

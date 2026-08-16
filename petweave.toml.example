@@ -45,8 +45,13 @@ disable_fullscreen_hide = false
 # Click-through: only the pet's opaque shape receives clicks (transparent
 # areas pass through to windows below). false = whole surface interactive.
 click_through = true
-# Gravity/collision physics after the pet is dragged (M3). false = the pet
-# stays where you drop it.
+# Movement mode — also switchable at runtime from the tray "移动模式" menu:
+#   physics = drag + gravity/collision: the pet falls and settles (M3)
+#   drag    = the pet follows dragging, no physics
+#   fixed   = the pet is pinned and cannot be moved
+mode = "physics"
+# Deprecated movement switch, only read when mode is empty:
+# physics = false behaves like mode = "drag".
 physics = true
 
 [pet]

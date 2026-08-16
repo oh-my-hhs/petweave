@@ -1,8 +1,9 @@
 //! StatusNotifierItem system tray via ksni (blocking API).
 //!
 //! The tray shows the pet as its icon. Left click toggles pet visibility;
-//! the menu offers show/hide and quit. Menu labels are read from shared
-//! state at menu-open time, so they are always current.
+//! the menu offers show/hide, the movement-mode radio group (drag / physics
+//! / fixed) and quit. Labels and mode state are read from shared state at
+//! menu-open time, so they are always current.
 //!
 //! Spawning uses `assume_sni_available(true)`: if no StatusNotifierWatcher
 //! exists yet (e.g. niri without a tray daemon), the service keeps waiting
@@ -10,6 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use petweave_core::config::MoveMode;
 use petweave_core::render::Frame;
 
 use crate::app::HostCommand;
@@ -20,6 +22,8 @@ use crate::graphics::scale_frame;
 pub struct TrayShared {
     /// Whether the pet is currently visible.
     pub visible: bool,
+    /// Current movement mode (radio selection).
+    pub mode: MoveMode,
 }
 
 /// Tray icon target size (square).
@@ -78,8 +82,11 @@ impl ksni::Tray for PetTray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{MenuItem, StandardItem};
-        let visible = self.shared.lock().unwrap().visible;
+        use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
+        let (visible, mode) = {
+            let shared = self.shared.lock().unwrap();
+            (shared.visible, shared.mode)
+        };
         vec![
             StandardItem {
                 label: if visible {
@@ -90,6 +97,33 @@ impl ksni::Tray for PetTray {
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.tx.send(HostCommand::ToggleVisible);
                 }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            SubMenu {
+                label: "移动模式".into(),
+                submenu: vec![
+                    RadioGroup {
+                        selected: MoveMode::ALL
+                            .iter()
+                            .position(|m| *m == mode)
+                            .unwrap_or(1),
+                        select: Box::new(|this: &mut Self, index: usize| {
+                            if let Some(mode) = MoveMode::ALL.get(index) {
+                                let _ = this.tx.send(HostCommand::SetMoveMode(*mode));
+                            }
+                        }),
+                        options: MoveMode::ALL
+                            .iter()
+                            .map(|m| RadioItem {
+                                label: m.label().into(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    }
+                    .into(),
+                ],
                 ..Default::default()
             }
             .into(),
@@ -181,7 +215,7 @@ mod tests {
 
     #[test]
     fn menu_labels_follow_visibility() {
-        let shared = Arc::new(Mutex::new(TrayShared { visible: false }));
+        let shared = Arc::new(Mutex::new(TrayShared { visible: false, ..Default::default() }));
         let (tx, _rx) = calloop::channel::channel::<HostCommand>();
         let tray = PetTray::new(shared.clone(), tx, None, "PetWeave".into());
         let items = tray.menu();
@@ -189,5 +223,35 @@ mod tests {
             panic!("first item should be standard");
         };
         assert_eq!(first.label, "显示宠物");
+    }
+
+    #[test]
+    fn menu_lists_move_modes_with_selection() {
+        let shared = Arc::new(Mutex::new(TrayShared {
+            mode: MoveMode::Fixed,
+            ..Default::default()
+        }));
+        let (tx, rx) = calloop::channel::channel::<HostCommand>();
+        let mut tray = PetTray::new(shared, tx, None, "PetWeave".into());
+
+        let items = tray.menu();
+        // [show/hide, separator, mode submenu, separator, quit]
+        let ksni::menu::MenuItem::SubMenu(sub) = &items[2] else {
+            panic!("third item should be the mode submenu");
+        };
+        assert_eq!(sub.label, "移动模式");
+        let ksni::menu::MenuItem::RadioGroup(group) = &sub.submenu[0] else {
+            panic!("submenu should hold a radio group");
+        };
+        let labels: Vec<_> = group.options.iter().map(|o| o.label.clone()).collect();
+        assert_eq!(labels, ["拖动模式", "物理模式", "固定模式"]);
+        assert_eq!(group.selected, 2, "fixed mode preselected");
+
+        // Selecting an option commands the host loop.
+        (group.select)(&mut tray, 0);
+        match rx.recv() {
+            Ok(HostCommand::SetMoveMode(MoveMode::Drag)) => {}
+            other => panic!("expected SetMoveMode(Drag), got {other:?}"),
+        }
     }
 }

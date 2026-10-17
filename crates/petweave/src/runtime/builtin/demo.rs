@@ -31,6 +31,8 @@ impl Pet for DemoPet {
         &self.id
     }
 
+    petweave_core::pet_id_setter!();
+
     fn name(&self) -> &str {
         "demo"
     }

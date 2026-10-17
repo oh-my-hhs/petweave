@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 description = "PetWeave host: Wayland desktop pet runtime"
 
+[lib]
+name = "petweave"
+path = "src/lib.rs"
+
 [[bin]]
 name = "petweave"
 path = "src/main.rs"

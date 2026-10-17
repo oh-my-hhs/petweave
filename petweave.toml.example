@@ -1,7 +1,8 @@
-# PetWeave example configuration.
+# PetWeave example configuration (config v2: multiple pets).
 # Copy to ~/.config/petweave/petweave.toml and adjust.
 # All keys are optional — every section/field falls back to its default.
-# The file is watched and hot-reloaded while running.
+# The file is watched and hot-reloaded while running: pets can be added,
+# removed, disabled or re-placed without restarting the host.
 
 [general]
 # Animation/render loop target FPS cap (1..=240).
@@ -10,7 +11,8 @@ fps = 60
 log_level = "info"
 # How often to sample CPU/memory and notify pets (Event::System). 0 = off.
 sysinfo_interval_secs = 5
-# Register a StatusNotifierItem tray icon (left-click show/hide, menu with quit).
+# Register a StatusNotifierItem tray icon (left-click show/hide all; the menu
+# lists every pet and its movement mode).
 tray_enabled = true
 
 [input]
@@ -24,57 +26,61 @@ devices = []
 # Hotplug rescan interval in seconds (fast 5s retry until a device is found).
 scan_interval_secs = 30
 
+# ---------------------------------------------------------------------------
+# [render] = global defaults for every pet. Each [[pets]] entry inherits every
+# key it does not set itself.
+# ---------------------------------------------------------------------------
 [render]
-# Pet surface size in pixels (logical; bongo overrides with its aspect).
+# Default surface size in pixels (bongo overrides this with cat_height).
 width = 256
 height = 256
 # wlr-layer-shell layer: background | bottom | top | overlay.
 layer = "top"
 # Anchor: combination of top | bottom | left | right (| separated).
 anchor = "bottom"
-# Margins from the anchored edge(s).
+# Margins from the anchored edge(s). Negative values pin past the edge.
 margin_top = 16
 margin_right = 0
 margin_bottom = 16
 margin_left = 0
-# Output to bind the surface to, by name (xdg-output). Empty = auto.
+# Output to bind pets to, by name (xdg-output). Empty = auto.
 # Find yours with: wlr-randr / hyprctl monitors / niri msg outputs
 output = ""
-# Never auto-hide the pet for fullscreen windows.
+# Never auto-hide for fullscreen windows.
 disable_fullscreen_hide = false
-# Click-through: only the pet's opaque shape receives clicks (transparent
-# areas pass through to windows below). false = whole surface interactive.
+# Click-through: only the pet's opaque shape receives clicks.
 click_through = true
 # Movement mode — also switchable at runtime from the tray "移动模式" menu:
-#   physics = drag + gravity/collision: the pet falls and settles (M3)
+#   physics = drag + gravity/collision: the pet falls and settles
 #   drag    = the pet follows dragging, no physics
 #   fixed   = the pet is pinned and cannot be moved
 mode = "physics"
-# Deprecated movement switch, only read when mode is empty:
-# physics = false behaves like mode = "drag".
-physics = true
 
-[pet]
-# Pet instance name (used in ids and logs).
-name = "bongo"
-# Whether the pet is loaded.
+# ---------------------------------------------------------------------------
+# [[pets]] — one block per pet instance (at most 12). `id` is optional and
+# generated as "{kind}-{n}" when omitted; it is stable and used by the tray
+# (and later by the settings panel).
+# Every [render] key may be repeated here to override it for this pet only:
+# width / height / layer / anchor / margin_* / output /
+# disable_fullscreen_hide / click_through / mode
+# ---------------------------------------------------------------------------
+
+# A BongoCat in the bottom-left corner.
+[[pets]]
+id = "bongo-main"
+name = "BongoCat"
 enabled = true
-# Pet kind: "demo" | "bongo" (role packages arrive with M2).
 kind = "bongo"
-# Demo pet base color as #rrggbb or #rrggbbaa. The demo pet flashes white on
-# keypress.
-color = "#ff6699"
+anchor = "bottom|left"
+margin_left = 32
+margin_bottom = 24
 
-[pet.bongo]
-# Directory holding the four bongo cat PNG frames.
+# Kind-specific options live in [pets.bongo].
+[pets.bongo]
 assets_dir = "assets/bongocat"
-# Target cat height in pixels; width follows the asset aspect ratio.
 cat_height = 110
-# How long a paw stays down after a key press, in ms.
 keypress_duration_ms = 100
-# Map keys to left/right paws by physical position.
 hand_mapping = true
-# Flip the cat horizontally (and swap the paw mapping).
 mirror_x = false
 # Sleep (dimmed cat) after this many seconds without a key press. 0 = off.
 idle_sleep_timeout_secs = 0
@@ -82,3 +88,65 @@ idle_sleep_timeout_secs = 0
 enable_scheduled_sleep = false
 sleep_begin = "22:00"
 sleep_end = "06:00"
+
+# A second cat: different size, own placement, own movement mode. Uncomment to
+# run two BongoCats side by side — they share their decoded PNGs, so the extra
+# instance costs one render frame rather than another set of assets.
+# [[pets]]
+# id = "bongo-small"
+# name = "小号 BongoCat"
+# enabled = true
+# kind = "bongo"
+# anchor = "bottom|right"
+# margin_right = 32
+# margin_bottom = 24
+# mode = "drag"
+#
+# [pets.bongo]
+# cat_height = 70
+
+# A declarative sprite pet from an installed role package
+# (`petweave list` shows installed packages).
+# [[pets]]
+# id = "blinky"
+# name = "Blinky"
+# enabled = true
+# kind = "sprite"
+# package = "blinky"
+# anchor = "top|right"
+# margin_top = 40
+# margin_right = 40
+
+# A Lua-scripted pet with a speech bubble.
+# [[pets]]
+# id = "lua-demo"
+# name = "Lua 气泡"
+# enabled = true
+# kind = "lua"
+# package = "lua-demo"
+# anchor = "top|left"
+# margin_top = 40
+# margin_left = 40
+# click_through = false
+
+# Built-in demo pet (colored square, no package needed). `color` is the
+# demo-only option; it flashes white on keypress.
+# [[pets]]
+# id = "demo-1"
+# name = "Demo"
+# kind = "demo"
+# color = "#ff6699"
+# mode = "fixed"
+
+# ---------------------------------------------------------------------------
+# Legacy single-pet configs keep working: a file with only [pet]/[pet.bongo]
+# (and no [[pets]]) is read as one pet with id "default".
+# Convert it in place (comments preserved, .bak backup) with:
+#     petweave config migrate --write
+# ---------------------------------------------------------------------------
+# [pet]
+# name = "bongo"
+# kind = "bongo"
+#
+# [pet.bongo]
+# cat_height = 110

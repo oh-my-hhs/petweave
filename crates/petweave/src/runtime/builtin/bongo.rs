@@ -10,11 +10,17 @@
 //! - `mirror_x` flips the artwork and swaps the paw mapping.
 //!
 //! Rendering: the four PNG frames are decoded, scaled to `cat_height` and
-//! cached as RGBA [`Frame`]s at startup (the reference rasterizes SVGs to the
-//! same effect; PNG route is used because the SVG rasterizer is not available
-//! in this offline build environment — swap in resvg when network is back).
+//! cached as RGBA [`Frame`]s at load time (the reference rasterizes SVGs to
+//! the same effect; PNG route is used because the SVG rasterizer is not
+//! available in this offline build environment — swap in resvg when network
+//! is back).
+//!
+//! The frames live in the host [`AssetCache`](crate::runtime::assets::AssetCache):
+//! two BongoCats at the same height share one decoded set, and a different
+//! `cat_height` simply adds another entry.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use petweave_core::config::PetConfig;
@@ -22,10 +28,8 @@ use petweave_core::events::Event;
 use petweave_core::pet::{Pet, PetId};
 use petweave_core::render::Frame;
 
-use crate::graphics::svg_to_frame;
+use crate::runtime::assets::{AssetCache, AssetKey};
 use crate::runtime::paws::{Paw, paw_for_keycode};
-
-use image::imageops::FilterType;
 
 const PNG_BOTH_UP: &str = "bongo-cat-both-up.png";
 const PNG_LEFT_DOWN: &str = "bongo-cat-left-down.png";
@@ -78,7 +82,9 @@ fn local_minutes() -> u32 {
 
 pub struct BongoPet {
     id: PetId,
-    frames: [Frame; 5],
+    /// Shared decoded frames (see [`AssetCache`]): both-up, left-down,
+    /// right-down, both-down, sleeping.
+    frames: [Arc<Frame>; 5],
     keypress_duration: Duration,
     mirror_x: bool,
     hand_mapping: bool,
@@ -96,30 +102,34 @@ pub struct BongoPet {
 }
 
 impl BongoPet {
-    pub fn new(cfg: &PetConfig) -> Result<Self, String> {
+    /// Load the cat frames through the shared [`AssetCache`].
+    ///
+    /// Frames are shared per `(assets_dir, cat_height)`; `mirror_x` pets get
+    /// their own mirrored copies (a handful of frames in exchange for a
+    /// simple, immutable cache).
+    pub fn new(cfg: &PetConfig, cache: &mut AssetCache) -> Result<Self, String> {
         let b = &cfg.bongo;
         let dir = resolve_assets_dir(&b.assets_dir);
 
         // Native size comes from the idle frame; all four share the viewBox.
-        let native = load_png(dir.join(PNG_BOTH_UP))?;
-        let aspect = native.width as f32 / native.height.max(1) as f32;
-        let height = b.cat_height.max(10);
-        let width = (height as f32 * aspect).round().max(1.0) as u32;
+        let (width, height) = cat_size(&dir.join(PNG_BOTH_UP), b.cat_height)?;
 
-        let both_up = scale(load_png(dir.join(PNG_BOTH_UP))?, width, height)?;
-        let left_down = scale(load_png(dir.join(PNG_LEFT_DOWN))?, width, height)?;
-        let right_down = scale(load_png(dir.join(PNG_RIGHT_DOWN))?, width, height)?;
-        let both_down = scale(load_png(dir.join(PNG_BOTH_DOWN))?, width, height)?;
-        // Sleeping frame: rasterize the SVG artwork when available, else fall
-        // back to a dimmed idle frame.
-        let sleeping = load_sleeping_frame(&dir, width, height)
-            .unwrap_or_else(|| make_sleeping_frame(&both_up));
+        let both_up = cache.get(&AssetKey::png(dir.join(PNG_BOTH_UP), width, height))?;
+        let left_down = cache.get(&AssetKey::png(dir.join(PNG_LEFT_DOWN), width, height))?;
+        let right_down = cache.get(&AssetKey::png(dir.join(PNG_RIGHT_DOWN), width, height))?;
+        let both_down = cache.get(&AssetKey::png(dir.join(PNG_BOTH_DOWN), width, height))?;
+        // Sleeping frame: rasterize the SVG artwork when available (shared
+        // through the cache), else fall back to a dimmed idle frame.
+        let sleeping = cache
+            .get(&AssetKey::svg(dir.join(SVG_SLEEPING), width, height))
+            .unwrap_or_else(|e| {
+                tracing::debug!("sleeping svg unavailable ({e}), using dimmed idle frame");
+                Arc::new(make_sleeping_frame(&both_up))
+            });
 
         let mut frames = [both_up, left_down, right_down, both_down, sleeping];
         if b.mirror_x {
-            for f in frames.iter_mut() {
-                f.flip_horizontal();
-            }
+            frames = frames.map(|f| Arc::new(mirrored(&f)));
         }
 
         Ok(Self {
@@ -164,17 +174,22 @@ impl BongoPet {
     }
 }
 
-/// Rasterize the sleeping SVG at the cat size (see `graphics::svg_to_frame`).
-fn load_sleeping_frame(dir: &PathBuf, width: u32, height: u32) -> Option<Frame> {
-    let path = dir.join(SVG_SLEEPING);
-    let bytes = std::fs::read(&path).ok()?;
-    let frame = svg_to_frame(&bytes, width, height)?;
-    if frame.pixels.iter().step_by(4).any(|&a| a > 0) {
-        tracing::debug!("rasterized {}", path.display());
-        Some(frame)
-    } else {
-        None // fully transparent render — fall back to the placeholder
-    }
+/// Frame size for a cat of `cat_height` pixels: width follows the idle
+/// frame's aspect ratio (all four PNGs share the viewBox).
+fn cat_size(idle_path: &std::path::Path, cat_height: u32) -> Result<(u32, u32), String> {
+    let native = image::open(idle_path)
+        .map_err(|e| format!("{}: {e}", idle_path.display()))?;
+    let aspect = native.width() as f32 / native.height().max(1) as f32;
+    let height = cat_height.max(10);
+    let width = (height as f32 * aspect).round().max(1.0) as u32;
+    Ok((width, height))
+}
+
+/// A horizontally flipped copy of a shared frame.
+fn mirrored(frame: &Frame) -> Frame {
+    let mut f = frame.clone();
+    f.flip_horizontal();
+    f
 }
 
 /// Dim the idle frame to suggest a sleeping cat (fallback placeholder).
@@ -214,6 +229,8 @@ impl Pet for BongoPet {
     fn id(&self) -> &PetId {
         &self.id
     }
+
+    petweave_core::pet_id_setter!();
 
     fn name(&self) -> &str {
         "bongo"
@@ -300,56 +317,14 @@ impl Pet for BongoPet {
     }
 
     fn reload(&mut self, cfg: &PetConfig) -> Result<(), String> {
-        *self = Self::new(cfg)?;
+        // Frames are re-decoded through a private cache: reloads are rare
+        // (config changes) and the host drops the shared entry afterwards,
+        // so this stays correct without threading the host cache through
+        // the `Pet` trait.
+        let mut cache = AssetCache::new();
+        *self = Self::new(cfg, &mut cache)?;
         Ok(())
     }
-}
-
-// --- asset loading ---------------------------------------------------------
-
-fn load_png(path: PathBuf) -> Result<Frame, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let img = image::load_from_memory(&bytes)
-        .map_err(|e| format!("decode {}: {e}", path.display()))?;
-    let mut rgba = img.to_rgba8();
-    // Normalize transparent pixels to (0,0,0,0): PNG files often carry stray
-    // RGB in fully transparent pixels, which would otherwise show as a dark
-    // fringe when composited (the same premultiplied-alpha fix wayland-bongocat
-    // applied for SVG edge artifacts).
-    for px in rgba.pixels_mut() {
-        if px[3] == 0 {
-            px[0] = 0;
-            px[1] = 0;
-            px[2] = 0;
-        }
-    }
-    let (w, h) = rgba.dimensions();
-    Ok(Frame {
-        width: w,
-        height: h,
-        pixels: rgba.into_raw(),
-    })
-}
-
-fn scale(img: Frame, width: u32, height: u32) -> Result<Frame, String> {
-    let buf = image::RgbaImage::from_raw(img.width, img.height, img.pixels)
-        .ok_or("bad image dimensions")?;
-    let mut resized = image::imageops::resize(&buf, width, height, FilterType::Triangle);
-    // Resampling can reintroduce stray RGB into fully transparent pixels;
-    // normalize them again (see `load_png`).
-    for px in resized.pixels_mut() {
-        if px[3] == 0 {
-            px[0] = 0;
-            px[1] = 0;
-            px[2] = 0;
-        }
-    }
-    let (w, h) = resized.dimensions();
-    Ok(Frame {
-        width: w,
-        height: h,
-        pixels: resized.into_raw(),
-    })
 }
 
 #[cfg(test)]
@@ -357,6 +332,12 @@ mod tests {
     use super::*;
     use petweave_core::config::BongoConfig;
     use petweave_core::events::InputEvent;
+
+    /// Build a cat with an isolated cache (tests must not share frames).
+    fn pet(cfg: &PetConfig) -> BongoPet {
+        let mut cache = AssetCache::new();
+        BongoPet::new(cfg, &mut cache).expect("assets should load from source tree")
+    }
 
     fn test_pet() -> BongoPet {
         let cfg = PetConfig {
@@ -367,7 +348,7 @@ mod tests {
             },
             ..PetConfig::default()
         };
-        BongoPet::new(&cfg).expect("assets should load from source tree")
+        pet(&cfg)
     }
 
     #[test]
@@ -483,7 +464,7 @@ mod tests {
             },
             ..PetConfig::default()
         };
-        let mut pet = BongoPet::new(&cfg).expect("assets load");
+        let mut pet = pet(&cfg);
         let (w, h) = pet.preferred_size().unwrap();
         let mut frame = Frame::new(w, h);
 
@@ -519,7 +500,7 @@ mod tests {
             kind: "bongo".to_string(),
             ..PetConfig::default()
         };
-        let mut pet = BongoPet::new(&cfg).expect("assets load");
+        let mut pet = pet(&cfg);
         let before = pet.preferred_size().unwrap();
         let cfg2 = PetConfig {
             bongo: BongoConfig {
@@ -543,7 +524,7 @@ mod tests {
             },
             ..PetConfig::default()
         };
-        let mut pet = BongoPet::new(&cfg).expect("assets load");
+        let mut pet = pet(&cfg);
         // Right key (57) + mirror -> left paw.
         pet.on_event(&Event::Input(InputEvent {
             device: "test".into(),

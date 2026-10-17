@@ -1,9 +1,10 @@
 //! StatusNotifierItem system tray via ksni (blocking API).
 //!
-//! The tray shows the pet as its icon. Left click toggles pet visibility;
-//! the menu offers show/hide, the movement-mode radio group (drag / physics
-//! / fixed) and quit. Labels and mode state are read from shared state at
-//! menu-open time, so they are always current.
+//! The tray shows the first pet as its icon. Left click toggles the
+//! visibility of every pet; the menu offers show/hide-all, one submenu per
+//! pet (show/hide + its movement mode), the global movement-mode radio group
+//! (drag / physics / fixed) and quit. Labels and state are read from shared
+//! state at menu-open time, so they are always current.
 //!
 //! Spawning uses `assume_sni_available(true)`: if no StatusNotifierWatcher
 //! exists yet (e.g. niri without a tray daemon), the service keeps waiting
@@ -17,13 +18,26 @@ use petweave_core::render::Frame;
 use crate::app::HostCommand;
 use crate::graphics::scale_frame;
 
+/// One pet as the tray sees it (menu entries).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayPet {
+    pub id: String,
+    pub name: String,
+    pub visible: bool,
+    pub mode: MoveMode,
+}
+
 /// State shared between the host and the tray thread.
 #[derive(Debug, Default)]
 pub struct TrayShared {
-    /// Whether the pet is currently visible.
+    /// Whether any pet is currently visible (drives the show/hide label).
     pub visible: bool,
-    /// Current movement mode (radio selection).
+    /// Current movement mode of the first pet (global radio selection).
     pub mode: MoveMode,
+    /// Tray title/tooltip (pet name or "N 只宠物").
+    pub title: String,
+    /// Running pets, in config order.
+    pub pets: Vec<TrayPet>,
 }
 
 /// Tray icon target size (square).
@@ -60,7 +74,14 @@ impl ksni::Tray for PetTray {
     }
 
     fn title(&self) -> String {
-        self.title.clone()
+        // Prefer the live title so pet renames/reloads show up without
+        // re-registering the tray.
+        let live = self.shared.lock().ok().map(|s| s.title.clone()).unwrap_or_default();
+        if live.is_empty() {
+            self.title.clone()
+        } else {
+            live
+        }
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -83,51 +104,121 @@ impl ksni::Tray for PetTray {
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
-        let (visible, mode) = {
+        let (visible, mode, pets) = {
             let shared = self.shared.lock().unwrap();
-            (shared.visible, shared.mode)
+            (shared.visible, shared.mode, shared.pets.clone())
         };
-        vec![
-            StandardItem {
-                label: if visible {
-                    "隐藏宠物".into()
+        let mut items: Vec<MenuItem<Self>> = vec![StandardItem {
+            label: if visible {
+                "隐藏全部宠物".into()
+            } else {
+                "显示全部宠物".into()
+            },
+            activate: Box::new(|this: &mut Self| {
+                let _ = this.tx.send(HostCommand::ToggleVisible);
+            }),
+            ..Default::default()
+        }
+        .into()];
+        if !pets.is_empty() {
+            // One submenu per pet: show/hide + its own movement mode.
+            let mut entries: Vec<MenuItem<Self>> = Vec::new();
+            for (idx, pet) in pets.iter().enumerate() {
+                let label = if pet.visible {
+                    format!("隐藏 {}", pet.name)
                 } else {
-                    "显示宠物".into()
-                },
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.tx.send(HostCommand::ToggleVisible);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            SubMenu {
-                label: "移动模式".into(),
-                submenu: vec![
-                    RadioGroup {
-                        selected: MoveMode::ALL
-                            .iter()
-                            .position(|m| *m == mode)
-                            .unwrap_or(1),
-                        select: Box::new(|this: &mut Self, index: usize| {
-                            if let Some(mode) = MoveMode::ALL.get(index) {
-                                let _ = this.tx.send(HostCommand::SetMoveMode(*mode));
-                            }
+                    format!("显示 {}", pet.name)
+                };
+                let id = pet.id.clone();
+                entries.push(
+                    StandardItem {
+                        label,
+                        activate: Box::new(move |this: &mut Self| {
+                            let _ = this.tx.send(HostCommand::TogglePetVisible(id.clone()));
                         }),
-                        options: MoveMode::ALL
-                            .iter()
-                            .map(|m| RadioItem {
-                                label: m.label().into(),
-                                ..Default::default()
-                            })
-                            .collect(),
+                        ..Default::default()
                     }
                     .into(),
-                ],
+                );
+                let pet_mode = pet.mode;
+                let pet_id = pet.id.clone();
+                entries.push(
+                    SubMenu {
+                        label: format!("{}：{}", pet.name, pet_mode.label()),
+                        submenu: vec![RadioGroup {
+                            selected: MoveMode::ALL
+                                .iter()
+                                .position(|m| *m == pet_mode)
+                                .unwrap_or(1),
+                            select: Box::new(move |this: &mut Self, index: usize| {
+                                if let Some(mode) = MoveMode::ALL.get(index) {
+                                    let _ = this.tx.send(HostCommand::SetPetMoveMode {
+                                        id: pet_id.clone(),
+                                        mode: *mode,
+                                    });
+                                }
+                            }),
+                            options: MoveMode::ALL
+                                .iter()
+                                .map(|m| RadioItem {
+                                    label: m.label().into(),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                        }
+                        .into()],
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                if idx + 1 < pets.len() {
+                    entries.push(MenuItem::Separator);
+                }
+            }
+            if pets.len() > 1 {
+                items.push(MenuItem::Separator);
+                items.push(
+                    SubMenu {
+                        label: format!("宠物（{}）", pets.len()),
+                        submenu: entries,
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            } else {
+                items.push(MenuItem::Separator);
+                items.extend(entries);
+            }
+        }
+        items.push(MenuItem::Separator);
+        items.push(
+            SubMenu {
+                label: "移动模式（全部）".into(),
+                submenu: vec![RadioGroup {
+                    selected: MoveMode::ALL
+                        .iter()
+                        .position(|m| *m == mode)
+                        .unwrap_or(1),
+                    select: Box::new(|this: &mut Self, index: usize| {
+                        if let Some(mode) = MoveMode::ALL.get(index) {
+                            let _ = this.tx.send(HostCommand::SetMoveMode(*mode));
+                        }
+                    }),
+                    options: MoveMode::ALL
+                        .iter()
+                        .map(|m| RadioItem {
+                            label: m.label().into(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                }
+                .into()],
                 ..Default::default()
             }
             .into(),
-            MenuItem::Separator,
+        );
+        items.push(MenuItem::Separator);
+        items.push(
             StandardItem {
                 label: "退出 PetWeave".into(),
                 activate: Box::new(|this: &mut Self| {
@@ -136,7 +227,8 @@ impl ksni::Tray for PetTray {
                 ..Default::default()
             }
             .into(),
-        ]
+        );
+        items
     }
 }
 
@@ -185,6 +277,16 @@ mod tests {
     }
 
     #[test]
+    fn title_follows_shared_state() {
+        let shared = shared_with_pets(vec![pet("a", "A", true), pet("b", "B", true)]);
+        let (tx, _rx) = calloop::channel::channel::<HostCommand>();
+        let tray = PetTray::new(shared.clone(), tx, None, "stale".into());
+        assert_eq!(tray.title(), "PetWeave", "live shared title wins");
+        shared.lock().unwrap().title = "PetWeave · 3 只宠物".into();
+        assert_eq!(tray.title(), "PetWeave · 3 只宠物");
+    }
+
+    #[test]
     fn icon_converts_rgba_to_argb_and_pads() {
         let mut f = Frame::new(32, 32);
         f.fill([255, 0, 0, 255]); // opaque red
@@ -213,16 +315,89 @@ mod tests {
         assert_eq!(&data[px..px + 4], &[255, 0, 0, 255], "blue -> ARGB32");
     }
 
+    fn shared_with_pets(pets: Vec<TrayPet>) -> Arc<Mutex<TrayShared>> {
+        Arc::new(Mutex::new(TrayShared {
+            visible: true,
+            mode: MoveMode::Physics,
+            title: "PetWeave".into(),
+            pets,
+        }))
+    }
+
+    fn pet(id: &str, name: &str, visible: bool) -> TrayPet {
+        TrayPet {
+            id: id.into(),
+            name: name.into(),
+            visible,
+            mode: MoveMode::Physics,
+        }
+    }
+
     #[test]
     fn menu_labels_follow_visibility() {
-        let shared = Arc::new(Mutex::new(TrayShared { visible: false, ..Default::default() }));
+        let shared = Arc::new(Mutex::new(TrayShared {
+            visible: false,
+            ..Default::default()
+        }));
         let (tx, _rx) = calloop::channel::channel::<HostCommand>();
         let tray = PetTray::new(shared.clone(), tx, None, "PetWeave".into());
         let items = tray.menu();
         let ksni::menu::MenuItem::Standard(first) = &items[0] else {
             panic!("first item should be standard");
         };
-        assert_eq!(first.label, "显示宠物");
+        assert_eq!(first.label, "显示全部宠物");
+    }
+
+    #[test]
+    fn menu_has_one_entry_per_pet() {
+        let shared = shared_with_pets(vec![
+            pet("bongo-main", "BongoCat", true),
+            pet("blinky-1", "Blinky", false),
+        ]);
+        let (tx, rx) = calloop::channel::channel::<HostCommand>();
+        let mut tray = PetTray::new(shared, tx, None, "PetWeave".into());
+        let items = tray.menu();
+        // [show/hide all, sep, 宠物(2) submenu, sep, mode, sep, quit]
+        let ksni::menu::MenuItem::SubMenu(pets_menu) = &items[2] else {
+            panic!("third item should be the per-pet submenu");
+        };
+        assert_eq!(pets_menu.label, "宠物（2）");
+        let labels: Vec<String> = pets_menu
+            .submenu
+            .iter()
+            .filter_map(|m| match m {
+                ksni::menu::MenuItem::Standard(s) => Some(s.label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, ["隐藏 BongoCat", "显示 Blinky"]);
+
+        // Toggling one pet sends the per-pet command with its id.
+        let ksni::menu::MenuItem::Standard(first) = &pets_menu.submenu[0] else {
+            panic!("first pet entry should be standard");
+        };
+        (first.activate)(&mut tray);
+        match rx.recv() {
+            Ok(HostCommand::TogglePetVisible(id)) => assert_eq!(id, "bongo-main"),
+            other => panic!("expected TogglePetVisible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_pet_menu_is_inlined() {
+        let shared = shared_with_pets(vec![pet("only", "Only", true)]);
+        let (tx, _rx) = calloop::channel::channel::<HostCommand>();
+        let tray = PetTray::new(shared, tx, None, "PetWeave".into());
+        let items = tray.menu();
+        // [show/hide all, sep, pet toggle, pet mode submenu, sep, mode, sep, quit]
+        let ksni::menu::MenuItem::Standard(toggle) = &items[2] else {
+            panic!("third item should be the pet toggle");
+        };
+        assert_eq!(toggle.label, "隐藏 Only");
+        let ksni::menu::MenuItem::SubMenu(mode) = &items[3] else {
+            panic!("fourth item should be the pet mode submenu");
+        };
+        assert_eq!(mode.label, "Only：物理模式");
     }
 
     #[test]
@@ -235,11 +410,11 @@ mod tests {
         let mut tray = PetTray::new(shared, tx, None, "PetWeave".into());
 
         let items = tray.menu();
-        // [show/hide, separator, mode submenu, separator, quit]
+        // [show/hide, sep, mode submenu, sep, quit] (no pets)
         let ksni::menu::MenuItem::SubMenu(sub) = &items[2] else {
             panic!("third item should be the mode submenu");
         };
-        assert_eq!(sub.label, "移动模式");
+        assert_eq!(sub.label, "移动模式（全部）");
         let ksni::menu::MenuItem::RadioGroup(group) = &sub.submenu[0] else {
             panic!("submenu should hold a radio group");
         };

@@ -1,27 +1,34 @@
 //! Wayland platform layer.
 //!
-//! Connection + registry, a `wlr-layer-shell` surface (one per pet, MVP has
-//! one) and CPU/SHM double-buffered presentation with HiDPI buffer scaling
-//! and xdg-output binding.
+//! One shared connection + registry ([`WaylandState`]) and **one
+//! `wlr-layer-shell` surface per pet** ([`PetSurface`]), each with its own
+//! SHM double buffer, HiDPI buffer scale, anchor/margins and input region
+//! (config v2 / `docs/GUI_ROADMAP.md` G0).
 //!
-//! Design notes (see `docs/TECH_STACK.md` §4.1/§4.2): the layer surface is
+//! Design notes (see `docs/TECH_STACK.md` §4.1/§4.2): a layer surface is
 //! positioned via anchor + margins; pets draw into an RGBA [`Frame`] at
 //! logical size which is blitted (with integer upscaling for HiDPI) into a
 //! BGRA (`ARGB8888`) SHM buffer sized at the surface's buffer scale. sctk's
 //! [`SlotPool`] tracks buffer release, so we only redraw into buffers the
 //! compositor has returned.
+//!
+//! The compositor never reports a layer surface's position back, so every
+//! [`PetSurface`] mirrors its anchor + margins and derives the on-screen
+//! rectangle from them ([`PetSurface::rect`], built on
+//! `petweave_core::placement`).
 
 use anyhow::{anyhow, Context, Result};
 
 use petweave_core::config::RenderConfig;
+use petweave_core::placement::{self, Rect};
 use petweave_core::render::Frame;
 
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::seat::SeatState;
-use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
+use smithay_client_toolkit::reexports::client::globals::{registry_queue_init, GlobalListContents};
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_surface};
-use smithay_client_toolkit::reexports::client::{Connection, EventQueue, QueueHandle};
+use smithay_client_toolkit::reexports::client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -39,33 +46,42 @@ use crate::app::App;
 use crate::graphics::{alpha_bbox, blit_rgba_to_bgra};
 use crate::platform::fullscreen::FullscreenTracker;
 
-/// Wayland state owned by the host (`App.wayland`).
+/// Namespace reported to the compositor (used by window rules / KDE tasks).
+pub const NAMESPACE: &str = "petweave";
+
+/// Wayland state shared by every pet surface (`App.wayland`).
 ///
 /// The [`EventQueue`] is *not* stored here: it is owned by the
 /// [`WaylandSource`](calloop_wayland_source::WaylandSource) registered in the
 /// host event loop (`WaylandState::connect` returns it alongside the state).
 pub struct WaylandState {
     pub conn: Connection,
-    /// Reserved for M1 protocol plumbing.
-    #[allow(dead_code)]
+    /// Queue handle used to create surfaces/buffers from pets at runtime.
     pub qh: QueueHandle<App>,
-    /// Reserved for M1 (per-surface creation from pets).
-    #[allow(dead_code)]
     pub compositor: CompositorState,
     pub shm: Shm,
-    /// Reserved for M1 (protocol negotiation).
-    #[allow(dead_code)]
     pub layer_shell: LayerShell,
     pub registry_state: RegistryState,
     pub output_state: OutputState,
     pub seat_state: SeatState,
-    pub surface: wl_surface::WlSurface,
-    /// Reserved for M1 (drag, click-through region updates).
-    #[allow(dead_code)]
-    pub layer: LayerSurface,
+    /// Counter for generated surface ids (log/debug only).
+    next_surface: u64,
+}
+
+/// One pet's layer surface: `wl_surface` + role + SHM double buffer + mirrored
+/// placement state.
+pub struct PetSurface {
+    /// Host-facing surface id (the pet's instance id unless the pet has more
+    /// than one surface).
+    pub id: String,
+    /// The wayland objects. `None` only while the surface is being re-bound
+    /// (`std::mem::take` hands the old object out of `App`); a placeholder is
+    /// never presented.
+    pub(super) surface: Option<wl_surface::WlSurface>,
+    pub(super) layer: Option<LayerSurface>,
     /// Output the surface is bound to (xdg-output by name), if any.
     pub bound_output: Option<wl_output::WlOutput>,
-    /// Current layer anchor (mirrors config until a drag switches to free).
+    /// Current layer anchor (mirrors what we set; drag/physics may switch it).
     pub anchor: Anchor,
     /// Current margins (top, right, bottom, left) — layer surfaces don't
     /// expose an accessor, so we mirror what we set.
@@ -89,8 +105,8 @@ pub struct WaylandState {
 }
 
 impl WaylandState {
-    /// Connect to the compositor and create the layer surface.
-    pub fn connect(render: &RenderConfig) -> Result<(Self, EventQueue<App>)> {
+    /// Connect to the compositor and bind the globals pets need.
+    pub fn connect() -> Result<(Self, EventQueue<App>)> {
         let conn = Connection::connect_to_env()
             .context("failed to connect to Wayland (is WAYLAND_DISPLAY set?)")?;
         let (globals, queue) =
@@ -109,16 +125,6 @@ impl WaylandState {
         let output_state = OutputState::new(&globals, &qh);
         let seat_state = SeatState::new(&globals, &qh);
 
-        let surface = compositor.create_surface(&qh);
-        let layer = layer_shell.create_layer_surface(
-            &qh,
-            surface.clone(),
-            parse_layer(&render.layer)?,
-            Some("petweave"),
-            None, // bound to a named output later if configured
-        );
-        Self::apply_props(&layer, render)?;
-
         Ok((
             Self {
                 conn,
@@ -129,107 +135,256 @@ impl WaylandState {
                 registry_state,
                 output_state,
                 seat_state,
-                surface,
-                layer,
-                bound_output: None,
-                anchor: parse_anchor(&render.anchor)?,
-                margins: (
-                    render.margin_top,
-                    render.margin_right,
-                    render.margin_bottom,
-                    render.margin_left,
-                ),
-                click_through: render.click_through,
-                input_bbox: None,
-                scale: 1,
-                pool: None,
-                buffers: [None, None],
-                pool_w: 0,
-                pool_h: 0,
-                configured: false,
-                width: render.width,
-                height: render.height,
+                next_surface: 0,
             },
             queue,
         ))
     }
 
-    /// (Re)create the layer surface bound to `output` (None = compositor
-    /// chooses). Dropping the old `LayerSurface` destroys role + surface.
-    pub fn rebind_to_output(
-        &mut self,
-        output: Option<&wl_output::WlOutput>,
-        render: &RenderConfig,
-    ) -> Result<()> {
-        self.pool = None;
-        self.buffers = [None, None];
+    /// Create a layer surface for `id` from `render` (the pet's resolved
+    /// placement), bound to the named output when it is already known.
+    pub fn create_surface(&mut self, id: impl Into<String>, render: &RenderConfig) -> Result<PetSurface> {
+        self.next_surface += 1;
+        let id = id.into();
+        let output = if render.output.is_empty() {
+            None
+        } else {
+            match self.find_output_named(&render.output) {
+                Some(o) => Some(o),
+                None => {
+                    tracing::warn!(
+                        "pet {id:?}: configured output {:?} not found yet (available: {:?})",
+                        render.output,
+                        self.output_names()
+                    );
+                    None
+                }
+            }
+        };
         let surface = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
             &self.qh,
             surface.clone(),
             parse_layer(&render.layer)?,
-            Some("petweave"),
+            Some(NAMESPACE),
+            output.as_ref(),
+        );
+        let mut pet = PetSurface {
+            id,
+            surface: Some(surface),
+            layer: Some(layer),
+            bound_output: output,
+            anchor: parse_anchor(&render.anchor)?,
+            margins: (
+                render.margin_top,
+                render.margin_right,
+                render.margin_bottom,
+                render.margin_left,
+            ),
+            click_through: render.click_through,
+            input_bbox: None,
+            scale: 1,
+            pool: None,
+            buffers: [None, None],
+            pool_w: 0,
+            pool_h: 0,
+            configured: false,
+            width: render.width,
+            height: render.height,
+        };
+        pet.apply_props(render)?;
+        Ok(pet)
+    }
+
+    /// Outputs currently known, by name (diagnostics).
+    pub fn output_names(&self) -> Vec<String> {
+        self.output_state
+            .outputs()
+            .filter_map(|o| self.output_state.info(&o))
+            .map(|i| i.name.unwrap_or_else(|| "<unnamed>".into()))
+            .collect()
+    }
+
+    /// Find a connected output by xdg-output name.
+    pub fn find_output_named(&self, name: &str) -> Option<wl_output::WlOutput> {
+        self.output_state.outputs().find(|out| {
+            self.output_state
+                .info(out)
+                .and_then(|i| i.name)
+                .is_some_and(|n| n == name)
+        })
+    }
+
+    /// Logical (logical-pixel) size of the output a surface lives on.
+    ///
+    /// Falls back to the surface's explicit output, then the first output.
+    pub fn output_logical_size_for(
+        &self,
+        bound: Option<&wl_output::WlOutput>,
+    ) -> Option<(f64, f64)> {
+        let primary = bound
+            .filter(|o| self.output_state.info(o).is_some())
+            .cloned()
+            .or_else(|| self.output_state.outputs().next())?;
+        let info = self.output_state.info(&primary)?;
+        info.logical_size
+            .map(|(w, h)| (w as f64, h as f64))
+            .or_else(|| {
+                Some((
+                    info.physical_size.0 as f64 / info.scale_factor.max(1) as f64,
+                    info.physical_size.1 as f64 / info.scale_factor.max(1) as f64,
+                ))
+            })
+    }
+
+    /// Create a compositor region (for input regions).
+    pub fn region(&self) -> Result<smithay_client_toolkit::compositor::Region> {
+        smithay_client_toolkit::compositor::Region::new(&self.compositor)
+            .map_err(|e| anyhow!("cannot create wl_region: {e}"))
+    }
+}
+
+impl Default for PetSurface {
+    /// A detached placeholder used by `std::mem::take` while re-binding.
+    /// It holds no Wayland objects and is never presented.
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            surface: None,
+            layer: None,
+            bound_output: None,
+            anchor: Anchor::empty(),
+            margins: (0, 0, 0, 0),
+            click_through: true,
+            input_bbox: None,
+            scale: 1,
+            pool: None,
+            buffers: [None, None],
+            pool_w: 0,
+            pool_h: 0,
+            configured: false,
+            width: 0,
+            height: 0,
+        }
+    }
+}
+
+impl PetSurface {
+    /// (Re)create the layer surface bound to `output` (None = compositor
+    /// chooses). Dropping the old `LayerSurface` destroys role + surface.
+    pub fn rebind_to_output(
+        &mut self,
+        wayland: &WaylandState,
+        output: Option<&wl_output::WlOutput>,
+        render: &RenderConfig,
+    ) -> Result<()> {
+        self.pool = None;
+        self.buffers = [None, None];
+        let surface = wayland.compositor.create_surface(&wayland.qh);
+        let layer = wayland.layer_shell.create_layer_surface(
+            &wayland.qh,
+            surface.clone(),
+            parse_layer(&render.layer)?,
+            Some(NAMESPACE),
             output,
         );
-        Self::apply_props(&layer, render)?;
-        self.surface = surface;
-        self.layer = layer;
+        self.surface = Some(surface);
+        self.layer = Some(layer);
         self.bound_output = output.cloned();
         self.configured = false;
         self.width = render.width;
         self.height = render.height;
-        self.anchor = parse_anchor(&render.anchor)?;
-        self.margins = (
-            render.margin_top,
-            render.margin_right,
-            render.margin_bottom,
-            render.margin_left,
-        );
-        tracing::info!("layer surface bound to output: {}", output.map(|_| "named").unwrap_or("auto"));
-        Ok(())
-    }
-
-    /// Property-level hot reload: layer/anchor/margins/size (double-buffered).
-    pub fn apply_render_props(&mut self, render: &RenderConfig) -> Result<()> {
-        Self::apply_props(&self.layer, render)?;
-        self.width = render.width;
-        self.height = render.height;
-        self.anchor = parse_anchor(&render.anchor)?;
-        self.margins = (
-            render.margin_top,
-            render.margin_right,
-            render.margin_bottom,
-            render.margin_left,
+        self.input_bbox = None;
+        self.apply_props(render)?;
+        tracing::info!(
+            "pet {:?}: layer surface bound to output {}",
+            self.id,
+            if self.bound_output.is_some() { "named" } else { "auto" }
         );
         Ok(())
     }
 
-    fn apply_props(layer: &LayerSurface, render: &RenderConfig) -> Result<()> {
+    /// Property-level hot reload: layer/anchor/margins/click-through/size.
+    ///
+    /// Applies cleanly on a configured surface; the compositor answers with a
+    /// configure, which the host turns into a redraw.
+    pub fn apply_props(&mut self, render: &RenderConfig) -> Result<()> {
+        let Some(layer) = self.layer.as_ref() else {
+            return Ok(());
+        };
         layer.set_layer(parse_layer(&render.layer)?);
-        layer.set_anchor(parse_anchor(&render.anchor)?);
-
+        self.anchor = parse_anchor(&render.anchor)?;
+        layer.set_anchor(self.anchor);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_margin(
+        self.margins = (
             render.margin_top,
             render.margin_right,
             render.margin_bottom,
             render.margin_left,
         );
+        layer.set_margin(
+            self.margins.0,
+            self.margins.1,
+            self.margins.2,
+            self.margins.3,
+        );
+        if self.click_through != render.click_through {
+            self.click_through = render.click_through;
+            self.input_bbox = None; // force the next present to refresh it
+        }
         layer.set_size(render.width, render.height);
+        if self.width != render.width || self.height != render.height {
+            self.width = render.width;
+            self.height = render.height;
+        }
         // Initial/updated commit without a buffer: the compositor answers
         // with a configure, after which we draw the first frame.
         layer.commit();
         Ok(())
     }
 
-    /// Present `frame` (logical size) to the layer surface.
+    /// The pet-facing id (mirrors `PetSurface::id`).
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The `wl_surface`; `None` only while a re-bind is in flight.
+    pub fn wl_surface(&self) -> Option<&wl_surface::WlSurface> {
+        self.surface.as_ref()
+    }
+
+    /// The layer-shell role; `None` only while a re-bind is in flight.
+    pub fn layer_surface(&self) -> Option<&LayerSurface> {
+        self.layer.as_ref()
+    }
+
+    /// Whether the surface buffer size needs to follow a new frame size.
+    pub fn set_size(&mut self, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        tracing::debug!(
+            "pet {:?}: resizing surface to {width}x{height}",
+            self.id
+        );
+        self.width = width;
+        self.height = height;
+        // Keep the anchor/margins; only the request changes.
+        let Some(layer) = self.layer.as_ref() else {
+            return;
+        };
+        layer.set_size(width, height);
+        layer.commit();
+    }
+
+    /// Present `frame` (logical size) to this layer surface.
     ///
     /// The buffer is allocated at physical pixels (`frame_size * scale`); the
     /// frame is upscaled into it and the surface's `buffer_scale` tells the
     /// compositor how to map it back to the logical surface size. Picks the
     /// first double-buffer slot the compositor has released; if both are in
     /// flight the frame is skipped (compositor is behind).
-    pub fn present(&mut self, frame: &Frame) -> Result<()> {
+    pub fn present(&mut self, wayland: &mut WaylandState, frame: &Frame) -> Result<()> {
         if !self.configured {
             return Ok(());
         }
@@ -239,11 +394,12 @@ impl WaylandState {
         if w <= 0 || h <= 0 {
             return Ok(());
         }
+        let Some(surface) = self.surface.clone() else {
+            return Ok(());
+        };
         // Keep the logical surface size in sync with the frame.
-        if self.width != frame.width || self.height != frame.height {
-            self.resize(frame.width, frame.height);
-        }
-        self.ensure_pool(w, h)?;
+        self.set_size(frame.width, frame.height);
+        self.ensure_pool(wayland, w, h)?;
 
         // Choose a writable slot (not in flight with the compositor).
         let (index, canvas) = {
@@ -269,19 +425,22 @@ impl WaylandState {
         buffer
             .as_ref()
             .expect("buffer")
-            .attach_to(&self.surface)
+            .attach_to(&surface)
             .map_err(|e| anyhow!("attach failed: {e}"))?;
-        self.surface.damage_buffer(0, 0, w, h);
-        self.surface.commit();
-        self.conn.flush().context("failed to flush Wayland connection")?;
-        self.update_input_region(frame);
+        surface.damage_buffer(0, 0, w, h);
+        surface.commit();
+        wayland
+            .conn
+            .flush()
+            .context("failed to flush Wayland connection")?;
+        self.update_input_region(wayland, frame);
         Ok(())
     }
 
     /// Keep the input region glued to the pet's opaque shape when
     /// click-through is enabled (transparent areas pass clicks to windows
     /// below). A fully transparent frame clears the region entirely.
-    pub fn update_input_region(&mut self, frame: &Frame) {
+    pub fn update_input_region(&mut self, wayland: &WaylandState, frame: &Frame) {
         let bbox = if self.click_through {
             alpha_bbox(frame, 8)
         } else {
@@ -291,7 +450,7 @@ impl WaylandState {
             return;
         }
         self.input_bbox = bbox;
-        let region = match smithay_client_toolkit::compositor::Region::new(&self.compositor) {
+        let region = match wayland.region() {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("cannot create input region: {e}");
@@ -301,48 +460,31 @@ impl WaylandState {
         if let Some((x, y, w, h)) = bbox {
             region.add(x, y, w as i32, h as i32);
         }
-        self.surface.set_input_region(Some(region.wl_region()));
-        tracing::debug!("input region updated: {bbox:?}");
+        if let Some(surface) = self.surface.as_ref() {
+            surface.set_input_region(Some(region.wl_region()));
+        }
+        tracing::debug!("pet {:?}: input region updated: {bbox:?}", self.id);
     }
 
-    /// Logical size of the output the surface is on (or the first output).
-    pub fn output_logical_size(&self) -> Option<(f64, f64)> {
-        let outputs: Vec<_> = self.output_state.outputs().collect();
-        let output = self
-            .bound_output
-            .as_ref()
-            .or_else(|| outputs.first())?;
-        let info = self.output_state.info(output)?;
-        info.logical_size
-            .map(|(w, h)| (w as f64, h as f64))
-            .or_else(|| {
-                Some((
-                    info.physical_size.0 as f64 / info.scale_factor.max(1) as f64,
-                    info.physical_size.1 as f64 / info.scale_factor.max(1) as f64,
-                ))
-            })
+    /// The surface rectangle on its output (derived from anchor + margins).
+    pub fn rect(&self, wayland: &WaylandState) -> Rect {
+        let (out_w, out_h) = wayland
+            .output_logical_size_for(self.bound_output.as_ref())
+            .unwrap_or((1920.0, 1080.0));
+        placement::surface_position(
+            from_anchor(self.anchor),
+            self.margins,
+            self.width as f64,
+            self.height as f64,
+            placement::OutputSize::new(out_w, out_h),
+        )
     }
 
     /// Surface top-left corner in output-logical coordinates for the current
     /// anchor + margins (drag start base; also how free positioning starts).
-    pub fn surface_position(&self, w: f64, h: f64) -> (f64, f64) {
-        let (out_w, out_h) = self.output_logical_size().unwrap_or((1920.0, 1080.0));
-        let m = self.margins;
-        let x = if self.anchor.contains(Anchor::LEFT) {
-            m.3 as f64
-        } else if self.anchor.contains(Anchor::RIGHT) {
-            out_w - m.1 as f64 - w
-        } else {
-            (out_w - w) / 2.0
-        };
-        let y = if self.anchor.contains(Anchor::TOP) {
-            m.0 as f64
-        } else if self.anchor.contains(Anchor::BOTTOM) {
-            out_h - m.2 as f64 - h
-        } else {
-            (out_h - h) / 2.0
-        };
-        (x, y)
+    pub fn position(&self, wayland: &WaylandState) -> (f64, f64) {
+        let r = self.rect(wayland);
+        (r.x, r.y)
     }
 
     /// Switch to free positioning (anchor top|left) at `(x, y)` and commit.
@@ -353,56 +495,109 @@ impl WaylandState {
     /// anchor ignores the left margin entirely — both leave the pet
     /// undraggable horizontally.
     pub fn set_free_position(&mut self, x: f64, y: f64) {
-        self.anchor = Anchor::TOP | Anchor::LEFT;
-        self.layer.set_anchor(self.anchor);
-        self.set_margins(y, x);
+        let (anchor, margins) = placement::free_placement(x, y);
+        self.anchor = to_anchor(anchor);
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_anchor(self.anchor);
+        }
+        self.set_margins(margins.0 as f64, margins.3 as f64);
     }
 
     /// Set top/left margins only (free positioning) and commit.
     pub fn set_margins(&mut self, top: f64, left: f64) {
         let top = top.round() as i32;
         let left = left.round() as i32;
-        self.margins = (top, 0, 0, left);
-        self.layer.set_margin(top, 0, 0, left);
-        self.layer.commit();
-    }
-
-    /// Change the requested layer-surface size (double-buffered property;
-    /// takes effect on the next commit, the compositor answers with a new
-    /// configure).
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if self.width == width && self.height == height {
+        if self.margins == (top, 0, 0, left) && self.anchor == Anchor::TOP | Anchor::LEFT {
             return;
         }
-        tracing::debug!("resizing surface to {width}x{height}");
-        self.width = width;
-        self.height = height;
-        self.layer.set_size(width, height);
-        self.layer.commit();
+        self.anchor = Anchor::TOP | Anchor::LEFT;
+        self.margins = (top, 0, 0, left);
+        let Some(layer) = self.layer.as_ref() else {
+            return;
+        };
+        layer.set_anchor(self.anchor);
+        layer.set_margin(top, 0, 0, left);
+        layer.commit();
+    }
+
+    /// Move the surface to `(x, y)` keeping its current anchor (gravity and
+    /// drag physics use top/left absolute coordinates regardless of how the
+    /// pet is anchored in the config).
+    pub fn set_position_absolute(&mut self, x: f64, y: f64) {
+        let anchor = placement::absolute_anchor(from_anchor(self.anchor));
+        if anchor != from_anchor(self.anchor) {
+            self.anchor = to_anchor(anchor);
+            if let Some(layer) = self.layer.as_ref() {
+                layer.set_anchor(self.anchor);
+            }
+        }
+        self.set_margins(y, x);
     }
 
     /// (Re)create the SHM pool and double buffer at physical size.
-    fn ensure_pool(&mut self, w: i32, h: i32) -> Result<()> {
+    fn ensure_pool(&mut self, wayland: &WaylandState, w: i32, h: i32) -> Result<()> {
         if self.pool.is_some() && self.pool_w == w && self.pool_h == h {
             return Ok(());
         }
         let stride = w * 4;
         let len = (h * stride) as usize;
-        let mut pool = SlotPool::new(len, &self.shm)
-            .map_err(|e| anyhow!("failed to create SHM pool: {e}"))?;
+        let mut pool = SlotPool::new(len, &wayland.shm)
+            .map_err(|e| anyhow!("pet {:?}: failed to create SHM pool: {e}", self.id))?;
         let (b0, _) = pool
             .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
-            .map_err(|e| anyhow!("failed to create buffer 0: {e}"))?;
+            .map_err(|e| anyhow!("pet {:?}: failed to create buffer 0: {e}", self.id))?;
         let (b1, _) = pool
             .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
-            .map_err(|e| anyhow!("failed to create buffer 1: {e}"))?;
+            .map_err(|e| anyhow!("pet {:?}: failed to create buffer 1: {e}", self.id))?;
         self.pool = Some(pool);
         self.buffers = [Some(b0), Some(b1)];
         self.pool_w = w;
         self.pool_h = h;
-        tracing::debug!("SHM pool (re)created: {w}x{h} (physical)");
+        tracing::debug!(
+            "pet {:?}: SHM pool (re)created: {w}x{h} (physical)",
+            self.id
+        );
         Ok(())
     }
+}
+
+/// Core placement anchor → sctk layer anchor.
+fn to_anchor(a: placement::Anchor) -> Anchor {
+    let mut out = Anchor::empty();
+    if a.top() {
+        out |= Anchor::TOP;
+    }
+    if a.bottom() {
+        out |= Anchor::BOTTOM;
+    }
+    if a.left() {
+        out |= Anchor::LEFT;
+    }
+    if a.right() {
+        out |= Anchor::RIGHT;
+    }
+    if out.is_empty() {
+        out = Anchor::BOTTOM;
+    }
+    out
+}
+
+/// sctk layer anchor → core placement anchor.
+fn from_anchor(a: Anchor) -> placement::Anchor {
+    let mut out = placement::Anchor::empty();
+    if a.contains(Anchor::TOP) {
+        out = out.with(placement::Anchor::TOP);
+    }
+    if a.contains(Anchor::BOTTOM) {
+        out = out.with(placement::Anchor::BOTTOM);
+    }
+    if a.contains(Anchor::LEFT) {
+        out = out.with(placement::Anchor::LEFT);
+    }
+    if a.contains(Anchor::RIGHT) {
+        out = out.with(placement::Anchor::RIGHT);
+    }
+    out
 }
 
 /// Parse `render.layer` into an sctk [`Layer`].
@@ -418,21 +613,8 @@ pub fn parse_layer(s: &str) -> Result<Layer> {
 
 /// Parse `render.anchor` ("top|bottom|left|right") into an [`Anchor`].
 pub fn parse_anchor(s: &str) -> Result<Anchor> {
-    let mut a = Anchor::empty();
-    for part in s.split(['|', ',', '+']) {
-        match part.trim() {
-            "top" => a |= Anchor::TOP,
-            "bottom" => a |= Anchor::BOTTOM,
-            "left" => a |= Anchor::LEFT,
-            "right" => a |= Anchor::RIGHT,
-            "" => {}
-            other => return Err(anyhow!("invalid anchor {other:?}")),
-        }
-    }
-    if a.is_empty() {
-        a = Anchor::BOTTOM;
-    }
-    Ok(a)
+    let parsed = placement::Anchor::parse(s).map_err(|e| anyhow!("{e}"))?;
+    Ok(to_anchor(parsed))
 }
 
 /// Blit an RGBA frame upscaled by `scale` (integer) into a BGRA canvas.
@@ -464,15 +646,23 @@ impl CompositorHandler for App {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         new_factor: i32,
     ) {
         let scale = new_factor.max(1);
-        if self.wayland.scale != scale {
-            self.wayland.scale = scale;
-            // Buffer scale applies to the next committed buffer.
-            let _ = self.wayland.surface.set_buffer_scale(scale);
-            self.request_redraw();
+        // Buffer scale applies to the next committed buffer; each pet
+        // surface has its own (pets may live on outputs with different
+        // scales).
+        if let Some(pet) = self
+            .pets
+            .iter_mut()
+            .find(|p| p.surface.wl_surface() == Some(surface))
+        {
+            if pet.surface.scale != scale {
+                pet.surface.scale = scale;
+                surface.set_buffer_scale(scale);
+                self.request_redraw();
+            }
         }
     }
 
@@ -492,8 +682,8 @@ impl CompositorHandler for App {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
-        // MVP redraws on demand (input events); frame-callback-paced redraw
-        // arrives with the animation loop (M1).
+        // Redraws are deadline-driven (pet animation + physics), not
+        // frame-callback driven.
     }
 
     fn surface_enter(
@@ -527,36 +717,53 @@ impl OutputHandler for App {
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        self.maybe_bind_named_output();
+        self.bind_named_outputs();
     }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        self.maybe_bind_named_output();
+        self.bind_named_outputs();
     }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 
 impl LayerShellHandler for App {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        tracing::warn!("layer surface closed by compositor");
-        self.exit = true;
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        // One pet's surface going away must not kill the whole host: drop
+        // that pet and keep the others running.
+        if let Some(pos) = self
+            .pets
+            .iter()
+            .position(|p| p.surface.layer_surface() == Some(layer))
+        {
+            let id = self.pets[pos].id.clone();
+            tracing::warn!("pet {id:?}: layer surface closed by compositor — dropping it");
+            self.drop_pet(&id);
+            self.needs_redraw = true;
+        }
     }
 
     fn configure(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &LayerSurface,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        let Some(pet) = self
+            .pets
+            .iter_mut()
+            .find(|p| p.surface.layer_surface() == Some(layer))
+        else {
+            return;
+        };
         let (w, h) = configure.new_size;
         if w > 0 && h > 0 {
-            self.wayland.width = w;
-            self.wayland.height = h;
+            pet.surface.width = w;
+            pet.surface.height = h;
         }
-        self.wayland.configured = true;
+        pet.surface.configured = true;
         self.request_redraw();
     }
 }
@@ -572,6 +779,30 @@ impl ProvidesRegistryState for App {
     registry_handlers![OutputState, FullscreenTracker, SeatState];
 }
 
+impl Dispatch<wl_output::WlOutput, ()> for App {
+    fn event(
+        _: &mut Self,
+        _: &wl_output::WlOutput,
+        _: <wl_output::WlOutput as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for App {
+    fn event(
+        _: &mut Self,
+        _: &wl_surface::WlSurface,
+        _: <wl_surface::WlSurface as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
 delegate_compositor!(App);
 delegate_shm!(App);
 delegate_layer!(App);
@@ -579,6 +810,13 @@ delegate_output!(App);
 delegate_seat!(App);
 delegate_pointer!(App);
 delegate_registry!(App);
+
+/// The registry queue contents (unused directly, but required by
+/// `QueueHandle` generics).
+#[allow(dead_code)]
+fn _assert_global_list(g: &GlobalListContents) {
+    let _ = g;
+}
 
 #[cfg(test)]
 mod tests {
@@ -602,5 +840,13 @@ mod tests {
             parse_anchor("bottom").unwrap()
         );
         assert!(parse_anchor("diagonal").is_err());
+    }
+
+    #[test]
+    fn anchor_round_trip() {
+        for s in ["bottom", "top|right", "bottom|left", "top", "left"] {
+            let a = parse_anchor(s).unwrap();
+            assert_eq!(to_anchor(from_anchor(a)), a);
+        }
     }
 }

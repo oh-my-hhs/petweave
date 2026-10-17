@@ -1,40 +1,41 @@
 //! PetWeave host entry point.
-
-mod app;
-mod cli;
-mod graphics;
-mod package;
-mod platform;
-mod runtime;
+//!
+//! The host is a thin CLI around the `petweave` library crate
+//! (`src/lib.rs`), which the settings GUI reuses for previews.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use nix::errno::Errno;
 use nix::fcntl::{open, OFlag};
 use nix::sys::stat::Mode;
 
+use petweave_core::config::{config_file_path, default_config_path};
 use petweave_core::Config;
 
-use crate::cli::{Cli, Command};
-use crate::platform::input;
-use crate::platform::singleton::Singleton;
+use petweave::app;
+use petweave::apply_cli_overrides;
+use petweave::cli::{Cli, Command, ConfigCommand};
+use petweave::platform::input;
+use petweave::platform::singleton::Singleton;
+use petweave::runtime::Runtime;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(Command::Doctor { apply }) = &cli.command {
-        return run_doctor(*apply);
-    }
-    if matches!(cli.command, Some(Command::ListDevices)) {
-        print_keyboards();
-        return Ok(());
-    }
-    if let Some(cmd) = &cli.command {
-        return run_package_command(cmd);
+    // Subcommands that do not need the config/runtime first.
+    match &cli.command {
+        Some(Command::Doctor { apply }) => return run_doctor(*apply),
+        Some(Command::ListDevices) => {
+            print_keyboards();
+            return Ok(());
+        }
+        Some(Command::Config { cmd }) => return run_config_command(cmd),
+        Some(_) => return run_package_command(&cli.command, &cli),
+        None => {}
     }
     if cli.list_devices {
         print_keyboards();
@@ -54,9 +55,9 @@ fn main() -> Result<()> {
     };
     init_tracing(&level);
 
-    // Debug helper: render the pet's current frame to a PNG, no Wayland.
+    // Debug helper: render one pet's current frame to a PNG, no Wayland.
     if let Some(path) = cli.preview.clone() {
-        export_preview(&config, &path)?;
+        export_preview(&config, cli.pet_id.as_deref(), &path)?;
         return Ok(());
     }
 
@@ -81,62 +82,40 @@ fn init_tracing(level: &str) {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| level.to_string());
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(filter).unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new(level)
-            }),
+            tracing_subscriber::EnvFilter::try_new(filter)
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level)),
         )
         .init();
 }
 
-/// Default config path: `$XDG_CONFIG_HOME/petweave/petweave.toml` (only if it
-/// exists — otherwise pure defaults are used).
-fn default_config_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    let p = base.join("petweave").join("petweave.toml");
-    p.exists().then_some(p)
-}
-
-/// CLI flags override config values (CLI wins over file over defaults).
-/// Re-applied on hot reload, so it must be usable from `app.rs`.
-pub(crate) fn apply_cli_overrides(config: &mut Config, cli: &Cli) -> Result<()> {
-    if let Some(fps) = cli.fps {
-        config.general.fps = fps;
+/// Render one pet's frame to a PNG (used by `--preview`).
+fn export_preview(config: &Config, pet_id: Option<&str>, path: &Path) -> Result<()> {
+    let runtime = Runtime::new(config);
+    for (id, err) in runtime.load_errors() {
+        eprintln!("warning: pet {id:?} failed to load: {err}");
     }
-    if cli.verbose {
-        config.general.log_level = "debug".to_string();
-    }
-    if let Some(w) = cli.width {
-        config.render.width = w;
-    }
-    if let Some(h) = cli.height {
-        config.render.height = h;
-    }
-    if cli.no_auto_input {
-        config.input.auto_detect = false;
-    }
-    if !cli.devices.is_empty() {
-        config.input.devices = cli.devices.clone();
-    }
-    if let Some(kind) = &cli.pet {
-        config.pet.kind = kind.clone();
-    }
-    Ok(config.validate()?)
-}
-
-/// Render the enabled pet's frame to a PNG (used by `--preview`).
-fn export_preview(config: &Config, path: &std::path::Path) -> Result<()> {
-    let mut runtime = crate::runtime::Runtime::new(
-        &config.pet,
-        (config.render.width, config.render.height),
-    );
-    let frames = runtime.render_all();
-    let Some(frame) = frames.first() else {
-        bail!("no pet enabled — nothing to preview");
+    let mut runtime = runtime;
+    let frame = match pet_id {
+        Some(id) => runtime
+            .render_pet(id)
+            .with_context(|| format!("no running pet with id {id:?}"))?
+            .clone(),
+        None => match runtime.render_all().first() {
+            Some((id, frame)) => {
+                tracing::info!("previewing pet {id:?}");
+                (*frame).clone()
+            }
+            None => bail!("no pet enabled — nothing to preview"),
+        },
     };
-    image::save_buffer(path, &frame.pixels, frame.width, frame.height, image::ColorType::Rgba8)
-        .with_context(|| format!("failed to save preview to {}", path.display()))?;
+    image::save_buffer(
+        path,
+        &frame.pixels,
+        frame.width,
+        frame.height,
+        image::ColorType::Rgba8,
+    )
+    .with_context(|| format!("failed to save preview to {}", path.display()))?;
     println!(
         "preview saved: {} ({}x{})",
         path.display(),
@@ -160,37 +139,104 @@ fn print_keyboards() {
     }
 }
 
+// --- config subcommands -----------------------------------------------------
+
+fn run_config_command(cmd: &ConfigCommand) -> Result<()> {
+    match cmd {
+        ConfigCommand::Migrate { config, write } => migrate_config(config.as_deref(), *write),
+    }
+}
+
+/// `petweave config migrate`: rewrite a legacy `[pet]` config as `[[pets]]`.
+fn migrate_config(explicit: Option<&Path>, write: bool) -> Result<()> {
+    let path = match explicit {
+        Some(p) => p.to_path_buf(),
+        None => config_file_path().context("no config path ($XDG_CONFIG_HOME/HOME unset)")?,
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let (migrated, changed) = Config::migrate_text(&text)
+        .with_context(|| format!("cannot migrate {}", path.display()))?;
+    if !changed {
+        println!("{} already uses [[pets]] — nothing to do", path.display());
+        return Ok(());
+    }
+    // Validate the result before touching anything.
+    let check = Config::parse(&migrated)
+        .and_then(|c| c.validate().map(|_| c))
+        .with_context(|| "migrated config does not validate — not writing")?;
+    tracing::debug!("migrated config has {} pet(s)", check.pets.len());
+    if !write {
+        print!("{migrated}");
+        println!("# (dry run: pass --write to update {})", path.display());
+        return Ok(());
+    }
+    // Keep a backup, then write atomically (tmp + rename) with 0600.
+    let backup = path.with_extension("toml.bak");
+    std::fs::copy(&path, &backup)
+        .with_context(|| format!("cannot write backup {}", backup.display()))?;
+    let tmp = path.with_file_name(format!(
+        "{}.tmp-{}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("petweave.toml"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, migrated.as_bytes())
+        .with_context(|| format!("cannot write {}", tmp.display()))?;
+    set_private_permissions(&tmp)?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("cannot replace {}", path.display()))?;
+    println!(
+        "migrated {} to [[pets]] (backup: {})",
+        path.display(),
+        backup.display()
+    );
+    Ok(())
+}
+
+/// Restrict a config file to the owner (future AI keys live there).
+fn set_private_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("cannot set permissions on {}", path.display()))
+}
+
 // --- package subcommands ----------------------------------------------------
 
-fn run_package_command(cmd: &Command) -> Result<()> {
-    use crate::package;
+fn run_package_command(cmd: &Option<Command>, _cli: &Cli) -> Result<()> {
+    use petweave::package;
     let e = |e: String| anyhow::anyhow!(e);
     match cmd {
-        Command::Install { path } => {
+        Some(Command::Install { path }) => {
             let name = package::install(path).map_err(e)?;
             println!("installed {name}");
         }
-        Command::Uninstall { name } => {
+        Some(Command::Uninstall { name }) => {
             package::uninstall(name).map_err(e)?;
             println!("uninstalled {name}");
         }
-        Command::List => {
+        Some(Command::List) => {
             let pkgs = package::list();
             if pkgs.is_empty() {
-                println!("no packages installed (repo: {})", package::repo_dir().display());
+                println!(
+                    "no packages installed (repo: {})",
+                    package::repo_dir().display()
+                );
                 return Ok(());
             }
             println!("installed packages ({}):", package::repo_dir().display());
             for p in &pkgs {
                 let desc = p.description.as_deref().unwrap_or("-");
-                println!("  {:<20} v{:<10} kind={:<8} {}", p.name, p.version, p.kind, desc);
+                println!(
+                    "  {:<20} v{:<10} kind={:<8} {}",
+                    p.name, p.version, p.kind, desc
+                );
             }
         }
-        Command::Package { dir, output } => {
+        Some(Command::Package { dir, output }) => {
             package::build(dir, output).map_err(e)?;
             println!("built {}", output.display());
         }
-        Command::Import { input, output } => {
+        Some(Command::Import { input, output }) => {
             package::import_xpm(input, output).map_err(e)?;
             println!("imported {} -> {}", input.display(), output.display());
         }
@@ -206,14 +252,49 @@ const UDEV_UACCESS_RULE: &str = "SUBSYSTEM==\"input\", KERNEL==\"event*\", TAG+=
 fn run_doctor(apply: bool) -> Result<()> {
     println!("== petweave doctor ==");
 
-    // Config.
+    // Config + pets.
     match default_config_path() {
         Some(p) => match Config::load(Some(&p)) {
-            Ok(cfg) => println!(
-                "[ok]    config: {} (valid, pet kind '{}')",
-                p.display(),
-                cfg.pet.kind
-            ),
+            Ok(cfg) => {
+                println!(
+                    "[ok]    config: {} (valid, {} pet(s){})",
+                    p.display(),
+                    cfg.pets.len(),
+                    if cfg.legacy_pet { ", legacy [pet] form" } else { "" }
+                );
+                for pet in cfg.enabled_pets() {
+                    println!(
+                        "          - {} (id {}, kind {}{}, {}x{} @ anchor {})",
+                        pet.name,
+                        pet.id,
+                        pet.instance.kind,
+                        if pet.instance.package.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", package {}", pet.instance.package)
+                        },
+                        pet.placement.width,
+                        pet.placement.height,
+                        pet.placement.anchor
+                    );
+                }
+                if cfg.legacy_pet {
+                    println!(
+                        "[info]  legacy [pet] table — `petweave config migrate --write` converts it"
+                    );
+                }
+                if cfg.legacy_pet_ignored {
+                    println!("[warn]  both [[pets]] and [pet] present: [pet] is ignored");
+                }
+                // Packages load? (no surface needed)
+                let rt = Runtime::new(&cfg);
+                for (id, err) in rt.load_errors() {
+                    println!("[fail]  pet {id:?} cannot be loaded: {err}");
+                }
+                if rt.load_errors().is_empty() {
+                    println!("[ok]    all enabled pets load ({})", rt.ids().join(", "));
+                }
+            }
             Err(e) => println!("[warn]  config: {} — {e}", p.display()),
         },
         None => println!("[info]  config: none found (using defaults)"),
@@ -241,7 +322,11 @@ fn run_doctor(apply: bool) -> Result<()> {
             Ok(_) => println!("[ok]    {} ({}) — readable", k.path.display(), k.name),
             Err(Errno::EACCES) => {
                 any_blocked = true;
-                println!("[fail]  {} ({}) — PERMISSION DENIED", k.path.display(), k.name);
+                println!(
+                    "[fail]  {} ({}) — PERMISSION DENIED",
+                    k.path.display(),
+                    k.name
+                );
             }
             Err(e) => println!("[warn]  {} — {e}", k.path.display()),
         }

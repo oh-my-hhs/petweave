@@ -15,7 +15,7 @@
 - **角色包**：`.petweave` 格式 + 声明式精灵宠物（零代码）+ **Lua 脚本宠物**（mlua 沙箱、气泡对话），工具链 `install/uninstall/list/package/import`
 - **生态开放**：创建角色包 → [docs/PACKAGES.md](docs/PACKAGES.md)（从零教程）· 贡献与投稿 → [CONTRIBUTING.md](CONTRIBUTING.md)
 
-创新点说明见 [Innovation.md](Innovation.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md)
+创新点说明见 [Innovation.md](Innovation.md) · 架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md) · 图形设置界面计划见 [docs/GUI_ROADMAP.md](docs/GUI_ROADMAP.md)
 
 ## 构建
 
@@ -47,7 +47,7 @@ cargo test                 # 运行测试（55 项）
 #### 样例 A：开箱即用
 
 ```bash
-petweave --pet demo               # 粉色方块，按键闪白
+petweave --pet demo               # 粉色方块，按键闪白（改第一只宠物的 kind）
 petweave --pet bongo              # BongoCat：按键击爪（尺寸由 cat_height 配置）
 # 配置 cat_height 与睡眠（bongo 的尺寸/睡眠不走 --width 参数）：
 cat > ~/.config/petweave/petweave.toml <<'EOF'
@@ -64,7 +64,58 @@ petweave
   <img src="docs/images/bongo.png" alt="BongoCat 在 PetWeave 上的渲染" width="480"/>
 </p>
 
-#### 样例 B：安装角色包并运行（bongo-sprite 全流程）
+#### 样例 B：三只宠物同屏（多宠物共存）
+
+```bash
+cat > ~/.config/petweave/petweave.toml <<'EOF'
+# [render] 是全局默认值；每只宠物只写自己要覆盖的键
+[render]
+anchor = "bottom"
+margin_bottom = 16
+mode = "physics"
+
+[[pets]]
+id = "cat-left"                 # 稳定实例 id（缺省自动生成 {kind}-{n}）
+name = "左猫"
+kind = "bongo"
+anchor = "bottom|left"          # 覆盖 [render].anchor
+margin_left = 64
+[pets.bongo]
+cat_height = 140
+
+[[pets]]
+id = "cat-right"
+name = "右猫"
+kind = "bongo"
+anchor = "bottom|right"
+margin_right = 64
+mode = "drag"                   # 这只不下落
+[pets.bongo]
+cat_height = 90
+
+[[pets]]
+id = "blinky"
+name = "Blinky"
+kind = "sprite"
+package = "bongo-sprite"        # 任意已安装的角色包
+anchor = "top|right"
+margin_top = 60
+click_through = false           # 整块表面都可点击
+EOF
+petweave
+```
+
+三只宠物各自独立：位置（anchor/margin/output/layer）、尺寸、移动模式、点击穿透、显隐互不影响；
+拖拽或物理只作用于被拖的那一只。两只同尺寸的 BongoCat 会**共享解码后的帧**（不重复占内存）。
+编辑配置即可在运行中增删宠物（300ms 内生效，surface 自动创建/销毁）。
+
+旧版单宠物配置（只有 `[pet]`）仍然可用；无损升级为多宠物格式：
+
+```bash
+petweave config migrate --write   # 保留注释，先备份为 petweave.toml.bak
+```
+
+#### 样例 C：安装角色包并运行（bongo-sprite 全流程）
 
 ```bash
 # 1) 安装仓库自带的预置包（目录或 .petweave 文件均可）
@@ -74,7 +125,7 @@ petweave list                     # 查看已安装
 
 # 2) 写配置指向它
 cat > ~/.config/petweave/petweave.toml <<'EOF'
-[pet]
+[[pets]]
 kind = "sprite"
 package = "bongo-sprite"
 name = "bongo"
@@ -91,17 +142,20 @@ petweave install blinky.petweave   # 从 zip 包安装
 
 效果：与内置 BongoCat 相同的爪击行为，但完全由 `pet.toml` 声明驱动（零代码）。
 
-#### 样例 C：Lua 脚本宠物（lua-demo）
+#### 样例 D：Lua 脚本宠物（lua-demo）
 
 ```bash
 petweave install packages/lua-demo
 cat > ~/.config/petweave/petweave.toml <<'EOF'
-[pet]
+[[pets]]
 kind = "lua"
 package = "lua-demo"
 name = "lua"
 EOF
 petweave
+
+# 只预览某一只宠物（不需要 Wayland）：
+petweave --preview lua.png --pet-id lua-1
 ```
 
 <p align="center">
@@ -127,7 +181,7 @@ function on_system(cpu, mem)
 end
 ```
 
-#### 样例 D：开发调试
+#### 样例 E：开发调试
 
 ```bash
 petweave --preview out.png        # 无需 Wayland，把宠物当前帧导出为 PNG
@@ -141,9 +195,10 @@ petweave import oneko.xpm -o oneko.png   # Oneko 的 XPM 精灵表 → PNG
 | 参数 | 说明 | 示例 |
 |---|---|---|
 | `-c, --config <PATH>` | 指定 TOML 配置文件；未指定时尝试 `$XDG_CONFIG_HOME/petweave/petweave.toml` | `-c petweave.toml` |
-| `--pet <demo\|bongo\|sprite\|lua>` | 覆盖 `pet.kind`（sprite/lua 还需配置 `pet.package`） | `--pet bongo` |
+| `--pet <demo\|bongo\|sprite\|lua>` | 覆盖第一只宠物的 `kind`（sprite/lua 还需配置 `package`） | `--pet bongo` |
 | `--width <N>` | 覆盖表面宽度（逻辑像素） | `--width 300` |
 | `--height <N>` | 覆盖表面高度 | `--height 150` |
+| `--pet-id <ID>` | 配合 `--preview` 选择要导出的宠物 | `--pet-id cat-left` |
 | `--fps <N>` | 覆盖动画帧率上限（1–240） | `--fps 60` |
 | `--device <PATH>` | 显式指定输入设备，可重复 | `--device /dev/input/event6` |
 | `--no-auto-input` | 关闭键盘自动探测 | |
@@ -162,6 +217,7 @@ petweave import oneko.xpm -o oneko.png   # Oneko 的 XPM 精灵表 → PNG
 | `petweave list` | 列出已安装的角色包 |
 | `petweave package <目录> -o <输出>` | 把包目录打包成 `.petweave` zip |
 | `petweave import <xpm> -o <png>` | Oneko 风格 XPM 精灵表 → PNG |
+| `petweave config migrate [--write] [-c PATH]` | 把旧 `[pet]` 单宠物配置改写成 `[[pets]]`（保留注释；`--write` 先备份 `.bak`） |
 
 ### 权限
 
@@ -198,8 +254,8 @@ auto_detect = true             # 自动探测 /dev/input/event*
 devices = []                   # 显式设备路径（优先于自动探测）
 scan_interval_secs = 30        # 热插拔重扫间隔；未找到设备时 5s 快速重试
 
-[render]
-width = 256                    # 表面宽度（逻辑像素；bongo/角色包会用自身尺寸覆盖）
+[render]                       # 全局默认值：[[pets]] 未写出的键从这里继承
+width = 256                    # 表面宽度（逻辑像素；bongo 等会用自己的固有尺寸）
 height = 256
 layer = "top"                  # background|bottom|top|overlay
 anchor = "bottom"              # top|bottom|left|right 的任意组合（| 分隔）
@@ -210,16 +266,30 @@ margin_left = 0
 output = ""                    # 绑定指定显示器（xdg-output 名称），空=自动
 disable_fullscreen_hide = false  # 全屏时也保持可见
 click_through = true           # 仅宠物不透明区域可点击（其余穿透）
-physics = true                 # 拖拽后启用重力/碰撞
+mode = "physics"               # physics | drag | fixed（旧 physics = true/false 仍兼容）
 
-[pet]
-name = "bongo"                 # 宠物实例名（日志/ID）
-enabled = true
-kind = "demo"                  # demo | bongo | sprite | lua
+# 每只宠物一个 [[pets]] 块（最多 12 只）。placement 键与 [render] 同名同义，写了就覆盖。
+[[pets]]
+id = "bongo-main"              # 可选，稳定实例 id（缺省 {kind}-{序号}）
+name = "bongo"                 # 展示名（日志/托盘）
+enabled = true                 # false = 不加载（配置保留）
+kind = "bongo"                 # demo | bongo | sprite | lua
 package = ""                   # 角色包名或目录路径（kind = sprite/lua 时必填）
 color = "#ff6699"              # demo 宠物基础色（#rrggbb 或 #rrggbbaa）
+width = 0                      # 0/缺省 = 用宠物固有尺寸，否则覆盖
+height = 0
+layer = "top"                  # 以下均可选，覆盖 [render]
+anchor = "bottom|left"
+margin_top = 16
+margin_right = 0
+margin_bottom = 16
+margin_left = 0
+output = ""
+disable_fullscreen_hide = false
+click_through = true
+mode = "physics"               # 也可写旧别名 move_mode（不可与 mode 冲突）
 
-[pet.bongo]                    # 仅 kind = "bongo" 时生效
+[pets.bongo]                   # 仅 kind = "bongo" 时生效
 assets_dir = "assets/bongocat" # 素材目录（PNG 帧 + bongo-sleeping.svg）
 cat_height = 110               # 猫高（像素），宽按素材宽高比自动
 keypress_duration_ms = 100     # 按下后爪子保持时长（毫秒）
@@ -230,6 +300,9 @@ enable_scheduled_sleep = false # 定时睡眠窗口（墙钟）
 sleep_begin = "22:00"          # 睡眠窗口开始（24h）
 sleep_end = "06:00"            # 睡眠窗口结束（24h）
 ```
+
+> 旧格式：`[pet]` / `[pet.bongo]` 仍被读取为"只有一只宠物"（id = `default`），启动日志会提示迁移；
+> `[[pets]]` 与 `[pet]` 同时存在时以 `[[pets]]` 为准。
 
 完整示例见 [`petweave.toml.example`](petweave.toml.example)；角色包清单（`pet.toml`）的**从零创建教程、字段全参考、Lua 进阶玩法、发布自检清单**见 [docs/PACKAGES.md](docs/PACKAGES.md)。
 
@@ -245,14 +318,15 @@ PetWeave 的长期生命力来自**大家一起创作角色包**。三种参与�
 
 ### 行为说明
 
-- **热重载**：改 `[render]` 的 layer/anchor/margins 与 `[pet]`/`[pet.bongo]` 参数即时生效（bongo 改 `cat_height` 会重新缩放）；改 `pet.kind` 或 `render.output` 需重启。
+- **多宠物**：`[[pets]]` 里每只宠物都有独立 surface、位置、移动模式、点击穿透与显隐；配置改动时自动增删（surface 创建/销毁）、换 `kind`（重建该宠物）或改 `output`（重建该 surface），均无需重启。同角色/同尺寸的宠物共享解码后的素材帧。
+- **热重载**：改 `[render]` / `[[pets]]` 的位置、尺寸与参数即时生效（bongo 改 `cat_height` 会重新缩放）；配置写错时保留旧配置并报错。
 - **睡眠**：`idle_sleep_timeout_secs` 到期或处于定时窗口时显示"睡着"的猫（官方 SVG 素材栅格化）；定时睡眠期间按键被忽略，闲置睡眠按键即可唤醒。
-- **全屏隐藏**：检测到（激活的）全屏窗口时自动隐藏宠物；`layer = "overlay"` 或 `disable_fullscreen_hide = true` 可跳过。注意：niri 未实现 `wlr-foreign-toplevel-management`，此功能在其上不生效（优雅降级，始终显示）。
-- **托盘**：注册 StatusNotifierItem（需要桌面环境/面板提供 StatusNotifierWatcher）；左键切换宠物显示/隐藏，右键菜单可退出；无 Watcher 时优雅跳过。
+- **全屏隐藏**：检测到（激活的）全屏窗口时自动隐藏宠物（按宠物判定，`layer = "overlay"` 或 `disable_fullscreen_hide = true` 的宠物会保持显示）。注意：niri 未实现 `wlr-foreign-toplevel-management`，此功能在其上不生效（优雅降级，始终显示）。
+- **托盘**：注册 StatusNotifierItem（需要桌面环境/面板提供 StatusNotifierWatcher）；左键切换全部宠物显示/隐藏；菜单里可单独显隐某只宠物、分别设置每只的移动模式，或统一设置"移动模式（全部）"；无 Watcher 时优雅跳过。
 - **指针与拖拽**：按住左键拖动宠物可移动（自动切换为自由定位）；拖拽松手后宠物受重力下落并在屏幕边缘反弹（`physics = false` 则停在原位）；点击宠物触发角色的 `click` 反应（Lua 宠物可写 `on_pointer`）。
 - **点击穿透**：`click_through = true`（默认）时只有宠物不透明区域接收点击，透明区域点击会穿过到下层窗口。
 - **单例**：同账号同时只能运行一个实例（flock 型 PID 文件 `$XDG_RUNTIME_DIR/petweave.pid`）。
-- **多显示器/HiDPI**：`render.output` 指定显示器名称（`wlr-randr` / `niri msg outputs` 查看）；整数倍缩放按 buffer_scale 物理渲染，高分屏下清晰。
+- **多显示器/HiDPI**：`output`（`[render]` 或每只宠物）指定显示器名称（`wlr-randr` / `niri msg outputs` 查看），可把不同宠物放到不同屏幕；整数倍缩放按 buffer_scale 物理渲染，高分屏下清晰。
 - **系统感知**：`sysinfo_interval_secs` 间隔向宠物推送 CPU/内存快照；Lua 宠物可写 `on_system(cpu, mem)` 响应（如 CPU 过载提醒）。
 - **Lua 沙箱**：脚本运行在 mlua 白名单环境（无 io/os/package/debug），指令预算防死循环，脚本报错只记日志。
 
@@ -275,6 +349,6 @@ crates/
   petweave/        主机：cli / app(事件循环) / package / platform / graphics / runtime
 assets/bongocat/   内置 BongoCat 素材（PNG 帧 + sleeping SVG，MIT，署名见目录内 README）
 packages/          预置角色包：bongo-sprite（声明式 BongoCat）/ blinky（网格示例）/ lua-demo（Lua 示例）
-docs/              技术栈分析 + 实现计划 + 角色包教程 + Live2D 路线 + 社区列表 + 配图
+docs/              技术栈分析 + 实现计划 + 图形界面计划 + 角色包教程 + Live2D 路线 + 社区列表 + 配图
 petweave.toml.example
 ```

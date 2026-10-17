@@ -9,3 +9,5 @@ pub use bongo::BongoPet;
 pub use demo::DemoPet;
 pub use lua::LuaPet;
 pub use sprite::SpritePet;
+
+pub use crate::runtime::assets::AssetCache;

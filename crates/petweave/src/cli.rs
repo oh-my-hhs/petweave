@@ -31,14 +31,19 @@ pub struct Cli {
     #[arg(long)]
     pub fps: Option<u32>,
 
-    /// Pet kind: demo | bongo (overrides pet.kind from config).
+    /// Pet kind: demo | bongo | sprite | lua (overrides the first pet's kind).
     #[arg(long)]
     pub pet: Option<String>,
 
-    /// Render the enabled pet's current frame to a PNG and exit (debug helper,
-    /// no Wayland needed).
+    /// Render a pet's current frame to a PNG and exit (debug helper, no
+    /// Wayland needed). With several pets the first one is rendered unless
+    /// `--pet-id` selects another.
     #[arg(long, value_name = "PATH")]
     pub preview: Option<PathBuf>,
+
+    /// Pet instance id for `--preview` (from `[[pets]].id`).
+    #[arg(long, value_name = "ID")]
+    pub pet_id: Option<String>,
 
     /// Explicit input device path (repeatable, e.g. /dev/input/event4).
     #[arg(long = "device")]
@@ -93,5 +98,25 @@ pub enum Command {
         /// Output .png file.
         #[arg(short, long, value_name = "OUT")]
         output: PathBuf,
+    },
+    /// Config maintenance commands.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ConfigCommand {
+    /// Rewrite a legacy single-[pet] config as [[pets]], keeping comments.
+    ///
+    /// Without --write the migrated file is printed to stdout.
+    Migrate {
+        /// Config file to migrate (default: $XDG_CONFIG_HOME/petweave/petweave.toml).
+        #[arg(short, long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        /// Write the result back (a .bak copy is kept next to the file).
+        #[arg(long)]
+        write: bool,
     },
 }

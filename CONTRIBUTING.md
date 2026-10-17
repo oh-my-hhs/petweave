@@ -30,10 +30,11 @@ PetWeave 的目标是让"桌宠"成为一个生态：**角色包创作者**提�
 
 ```bash
 cargo build --release          # 构建
-cargo test                     # 全部测试（55 项）
+cargo test                     # 全部测试（98 项：宿主 63 + core 35）
 ```
 
-> 无网络环境：先在能联网的机器上 `cargo fetch` 一次，之后可 `cargo build --offline` 离线构建。
+> 无网络环境：本仓库 `.cargo-home/` 已内置一份 registry，直接
+> `CARGO_HOME=$PWD/.cargo-home cargo build --offline` 即可；详见 [AGENTS.md](AGENTS.md) §1。
 
 ### 开发约定
 

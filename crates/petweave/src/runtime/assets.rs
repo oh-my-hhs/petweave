@@ -254,7 +254,8 @@ mod tests {
         // Bottom row (y = 3) of the 4x4 canvas starts at 3 * 4 pixels.
         let last_row = 3 * 4 * 4;
         assert_eq!(&s.pixels[last_row..last_row + 4], &[0, 0, 0, 0], "bottom row too");
-        let mid = (1 * 4 + 2) * 4;
+        // Middle band (y = 1), pixel x = 2 of the 4x4 canvas.
+        let mid = (4 + 2) * 4;
         assert_eq!(s.pixels[mid + 3], 255, "sprite occupies the middle band");
         // Transparent pixels stay fully zeroed (no dark fringe).
         for px in s.pixels.chunks_exact(4) {

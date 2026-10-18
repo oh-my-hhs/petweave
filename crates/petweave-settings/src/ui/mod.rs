@@ -18,14 +18,18 @@ pub fn opt_u32_row(
     range: std::ops::RangeInclusive<u32>,
     hint: &str,
 ) {
-    ui.label(label);
+    let label = ui.label(label);
+    let label_id = label.id;
     ui.horizontal(|ui| {
         let mut current = value.unwrap_or(inherited);
         let response = ui.add(egui::DragValue::new(&mut current).range(range).speed(1.0));
         if response.changed() {
             *value = (current != inherited).then_some(current);
         }
-        if value.is_some() && ui.small_button(crate::i18n::Tr::INHERIT).clicked() {
+        let inherit = ui
+            .small_button(crate::i18n::Tr::INHERIT)
+            .labelled_by(label_id);
+        if value.is_some() && inherit.clicked() {
             *value = None;
         }
         if value.is_none() {
@@ -39,7 +43,8 @@ pub fn opt_u32_row(
 }
 
 pub fn opt_i32_row(ui: &mut egui::Ui, label: &str, value: &mut Option<i32>, inherited: i32) {
-    ui.label(label);
+    let label = ui.label(label);
+    let label_id = label.id;
     ui.horizontal(|ui| {
         let mut current = value.unwrap_or(inherited);
         let response = ui.add(
@@ -50,7 +55,10 @@ pub fn opt_i32_row(ui: &mut egui::Ui, label: &str, value: &mut Option<i32>, inhe
         if response.changed() {
             *value = (current != inherited).then_some(current);
         }
-        if value.is_some() && ui.small_button(crate::i18n::Tr::INHERIT).clicked() {
+        let inherit = ui
+            .small_button(crate::i18n::Tr::INHERIT)
+            .labelled_by(label_id);
+        if value.is_some() && inherit.clicked() {
             *value = None;
         }
         if value.is_none() {
@@ -61,13 +69,17 @@ pub fn opt_i32_row(ui: &mut egui::Ui, label: &str, value: &mut Option<i32>, inhe
 }
 
 pub fn opt_bool_row(ui: &mut egui::Ui, label: &str, value: &mut Option<bool>, inherited: bool) {
-    ui.label(label);
+    let label = ui.label(label);
+    let label_id = label.id;
     ui.horizontal(|ui| {
         let mut current = value.unwrap_or(inherited);
         if ui.checkbox(&mut current, "").changed() {
             *value = (current != inherited).then_some(current);
         }
-        if value.is_some() && ui.small_button(crate::i18n::Tr::INHERIT).clicked() {
+        let inherit = ui
+            .small_button(crate::i18n::Tr::INHERIT)
+            .labelled_by(label_id);
+        if value.is_some() && inherit.clicked() {
             *value = None;
         }
         if value.is_none() {
@@ -90,7 +102,8 @@ pub fn opt_string_row(
     inherited: &str,
     width: f32,
 ) {
-    ui.label(label);
+    let label = ui.label(label);
+    let label_id = label.id;
     ui.horizontal(|ui| {
         let mut current = value.clone().unwrap_or_else(|| inherited.to_string());
         let response = ui.add(egui::TextEdit::singleline(&mut current).desired_width(width));
@@ -98,7 +111,10 @@ pub fn opt_string_row(
             let trimmed = current.trim();
             *value = (trimmed != inherited && !trimmed.is_empty()).then(|| trimmed.to_string());
         }
-        if value.is_some() && ui.small_button(crate::i18n::Tr::INHERIT).clicked() {
+        let inherit = ui
+            .small_button(crate::i18n::Tr::INHERIT)
+            .labelled_by(label_id);
+        if value.is_some() && inherit.clicked() {
             *value = None;
         }
         if value.is_none() {

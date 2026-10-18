@@ -506,12 +506,14 @@ click_through = false
       + 保存并应用（F31/F32/F33/F34：立即 `Reload`、原子写、断网可编辑、关 GUI 不影响宿主）
 - [x] `petweave settings` 入口（同目录或 PATH 查找 `petweave-settings`，缺失时给出构建/安装提示）
 - [x] UI 测试：`egui_kittest` 覆盖"改字段 → 脏 → 保存 → 文件内容含注释"（headless，无 GPU）
-- [x] 测试：settings 库 21 项（store 11 + client 4 + app 6）+ 集成 3 项（store→host 热重载 2 + `egui_kittest` UI 1）
+- [x] 测试：settings 库 21 项（store 11 + client 4 + app 6）+ 集成 4 项（store→host 热重载 2 + `egui_kittest` UI 2：保存与继承）
 - 验收：✅ 设置在 niri 启动成功（窗口标题 `PetWeave 设置`、进程常驻）；
   "加包/改高度/删除"由列表/参数页 + 保存路径实现，保存→注释保留→回读校验由 kittest 与 store 测试覆盖
 - 热重载语义（G2 修复）：
   - `kind` 或 **`package`** 变更 → 重建宠物实例（此前只调 `Pet::reload`，sprite/lua 不会换包）；
   - `width/height` 变更 → `resize_to` 把素材等比缩放进新盒子（BongoCat 此前只改透明 surface、猫本身大小不变）；
+  - **删除** `width/height`（GUI「继承」）→ 回到宠物固有尺寸；sprite/lua 的 layout resize 不再覆盖
+    `preferred_size`（此前会在删除配置后仍沿用上次缩放出的盒子，表现为"继承保存不变化"）；
   - `output` 变更 → 重建/重绑 surface；其余参数原地应用。
   - GUI 保存时若控制通道尚未握手，会记住并在连接后补发 `Reload`，同时状态栏明确提示"宿主未连接"。
 - 已知边界：
@@ -643,7 +645,7 @@ crates/petweave-settings/
 |---|---|---|---|
 | G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试 | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
 | G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
-| G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 3 项集成测试（含 kittest）、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
+| G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 4 项集成测试（含 kittest）、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
 | G3 布局/预览 | ⬜ | 交互约定（§7） | 未写代码 |
 | G4 诊断/分发 | ⬜ | — | — |
 | G5 打磨 | ⏸ | — | 视反馈启动 |
@@ -673,5 +675,6 @@ crates/petweave-settings/
 | 2026-10-17 | v0.1 | 初稿：确认 egui/eframe + 独立二进制、先多宠物、表单+画布双布局；建立 G0–G5 与需求/协议/配置草案 |
 | 2026-10-17 | v0.2 | **G0 落地**：配置 v2（`[[pets]]` + `[render]` 继承 + `[pet]` 兼容 + `config migrate`）、每宠物独立 surface/拖拽/物理/显隐、热增删（`ReloadOutcome`）、共享 `AssetCache`（Q1 定案）、多宠物托盘、`petweave` lib crate（D7 落地）；§5.2 第 4 条（尺寸优先级）按实现修订 |
 | 2026-10-18 | v0.3 | **G1 落地**：`platform/control.rs`（JSON Lines / 64 KiB 行上限 / 0700+0600）、主线程 `HostCommand::Control` 分发、§6.3 全部 op（`RenderPet` 延后，Q6 定案）与三类事件、`petweave control` 调试客户端、9 项协议测试 + niri 双宠物实机验收；宿主仍零 GUI 依赖（新增依赖仅 `serde_json`） |
+| 2026-10-18 | v0.6 | **「继承」修复**：sprite/lua 把 layout box（`resize_to`）与固有尺寸（`preferred_size`）分开记录，删除 `width/height` 后回到包/脚本尺寸（此前 `SpritePet`/`LuaPet` 的 preferred 会被缩放后的 surface 覆盖，导致"点继承保存不变化"）；「继承」按钮加无障碍标签，新增 kittest 继承保存测试与 2 项宿主回归测试 |
 | 2026-10-18 | v0.5 | **G2 热重载修复**：`package` 变更重建实例（原实现只走 `Pet::reload`，sprite/lua 不会换包）；BongoCat 的配置宽高通过 `Pet::resize_to` 等比缩放素材（原实现只改 surface，猫的大小不变）；GUI 在宿主未连接时记住保存并补发 `Reload`，状态栏不再谎报"已通知"；新增 2 项 store→host 集成回归测试（尺寸/换包）与 1 项 Bongo 缩放单测 |
-| 2026-10-18 | v0.4 | **G2 落地**：新增 `crates/petweave-settings`（eframe 0.37/egui 0.37，MSRV 1.95，glow）、`store.rs`（toml_edit 逐键更新保注释、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、回读校验、旧格式迁移、外部修改检测）、非阻塞 `client.rs`（重连/握手/版本降级）、宠物列表 + 参数表单 + 关于页、`petweave settings` 入口；21 项库测试 + 3 项集成测试（含 `egui_kittest`）；宿主导出依赖树无 egui/eframe/winit（N01） |
+| 2026-10-18 | v0.4 | **G2 落地**：新增 `crates/petweave-settings`（eframe 0.37/egui 0.37，MSRV 1.95，glow）、`store.rs`（toml_edit 逐键更新保注释、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、回读校验、旧格式迁移、外部修改检测）、非阻塞 `client.rs`（重连/握手/版本降级）、宠物列表 + 参数表单 + 关于页、`petweave settings` 入口；21 项库测试 + 4 项集成测试（含 `egui_kittest`）；宿主导出依赖树无 egui/eframe/winit（N01） |

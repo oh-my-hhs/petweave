@@ -68,3 +68,55 @@ fn toggle_field_then_save_keeps_comments() {
     let backup = std::fs::read_to_string(path.with_extension("toml.bak")).expect("backup");
     assert!(!backup.contains("enabled"));
 }
+
+/// The user-visible "继承" flow: an explicit width/height key must be removed
+/// on save (the host then falls back to the pet's own size). This used to be
+/// the remaining "saving inherit does nothing" report.
+#[test]
+fn inherit_button_clears_the_override_and_saves() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("petweave.toml");
+    std::fs::write(
+        &path,
+        r#"# keep me
+[[pets]]
+id = "cat"
+name = "Cat"
+kind = "demo"
+width = 300
+height = 120
+"#,
+    )
+    .expect("write config");
+
+    let mut app = SettingsApp::new_at(path.clone(), std::path::PathBuf::new()).expect("app");
+    app.page = Page::Params;
+    app.selected = Some(0);
+    let mut harness = Harness::builder()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .build_ui_state(|ui, app: &mut SettingsApp| app.ui_test(ui), app);
+    harness.run();
+
+    // The inherit buttons are labelled by their row ("宽度") for screen
+    // readers, which also gives the test a unique handle.
+    harness.get_by_label("宽度").click();
+    harness.run();
+    assert_eq!(harness.state().draft.pets[0].width, None);
+    assert!(harness.state().dirty());
+
+    harness.get_by_label("保存并应用").click();
+    harness.run();
+    assert!(
+        harness.state().error.is_none(),
+        "{:?}",
+        harness.state().error
+    );
+    let text = std::fs::read_to_string(&path).expect("saved");
+    assert!(text.contains("# keep me"), "{text}");
+    assert!(!text.contains("width ="), "width key is removed:\n{text}");
+    assert!(
+        text.contains("height = 120"),
+        "untouched keys stay:\n{text}"
+    );
+}

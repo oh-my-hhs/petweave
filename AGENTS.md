@@ -21,7 +21,7 @@ in-repo cargo home and `--offline`:
 
 ```bash
 CARGO_HOME=$PWD/.cargo-home cargo build --offline
-CARGO_HOME=$PWD/.cargo-home cargo test  --offline      # 163 tests: 101 host + 38 core + 24 settings
+CARGO_HOME=$PWD/.cargo-home cargo test  --offline      # 166 tests: 103 host + 38 core + 25 settings
 CARGO_HOME=$PWD/.cargo-home cargo clippy --offline --all-targets
 ```
 

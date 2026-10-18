@@ -97,8 +97,15 @@ pub struct SpritePet {
     /// Press mode: whether the whole keyboard was held at the last tap point.
     /// Used so two keys pressed nearly together are not counted as one tap.
     last_any: bool,
-    /// Surface size: the box the artwork is scaled into.
+    /// Intrinsic size the package/script asks for (`Pet::preferred_size`).
+    /// Host layout boxes (`[[pets]].width/height`) do **not** overwrite it, so
+    /// removing the override (GUI "继承") returns to the package size.
     surface: (u32, u32),
+    /// Box the animations are currently scaled into (host/script).
+    render_box: (u32, u32),
+    /// Original artwork size; the aspect source for proportional scaling
+    /// (scaled frames would otherwise compound rounding on every resize).
+    natural_artwork: (u32, u32),
     last_frame: usize,
 }
 
@@ -133,6 +140,7 @@ impl SpritePet {
         // host may still want to drive it later, so don't fail here.
         let sheets = decode_sheets(manifest, dir)?;
         let (animations, surface) = extract_animations(manifest, &sheets, &opts)?;
+        let natural_artwork = natural_size(&animations);
         let idle = manifest.reactions.idle.clone();
         let current =
             idle.clone().or_else(|| animations.keys().next().cloned()).unwrap_or_default();
@@ -174,6 +182,8 @@ impl SpritePet {
             last_right: false,
             last_any: false,
             surface,
+            render_box: surface,
+            natural_artwork,
             last_frame: usize::MAX,
         })
     }
@@ -427,25 +437,41 @@ impl SpritePet {
     /// The artwork is rescaled proportionally into `w`x`h` (Q2A: never
     /// distorted); the surface is exactly that box. Layout and GUI sizing go
     /// through here, so a pet's content always follows its box.
+    /// Script-facing resize (`pet.size`): changes both the drawn box and the
+    /// intrinsic size the pet reports.
     pub fn resize(&mut self, w: u32, h: u32) -> bool {
         let size = (w.clamp(1, MAX_SURFACE_DIM), h.clamp(1, MAX_SURFACE_DIM));
-        if size == self.surface {
+        let mut changed = self.scale_into(size);
+        if self.surface != size {
+            self.surface = size;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Host layout resize (`[[pets]].width/height`, GUI size field): scale the
+    /// artwork into the box but keep the intrinsic size, so clicking
+    /// "继承" (clearing the keys) returns to the package/script size.
+    pub fn resize_box(&mut self, w: u32, h: u32) -> bool {
+        let size = (w.clamp(1, MAX_SURFACE_DIM), h.clamp(1, MAX_SURFACE_DIM));
+        self.scale_into(size)
+    }
+
+    fn scale_into(&mut self, size: (u32, u32)) -> bool {
+        if size == self.render_box {
             return false;
         }
-        let natural = natural_size(&self.animations);
-        let drawn = petweave_core::pet::scale_to_fit(natural, size);
+        let drawn = petweave_core::pet::scale_to_fit(self.natural_artwork, size);
         scale_all(&mut self.animations, drawn);
-        self.surface = size;
+        self.render_box = size;
         self.last_frame = usize::MAX;
         true
     }
 
     /// Box the sprite reports for the default (unconfigured) case: the
-    /// artwork size plus padding.
+    /// intrinsic (package/script) size including padding.
     pub fn natural_surface(&self) -> (u32, u32) {
-        let (w, h) = natural_size(&self.animations);
-        let p = self.padding as u32 * 2;
-        (w + p, h + p)
+        self.surface
     }
 
     /// Let a script feed a synthetic key (Lua `pet.key`): returns whether a
@@ -751,7 +777,7 @@ impl Pet for SpritePet {
     }
 
     fn resize_to(&mut self, width: u32, height: u32) {
-        self.resize(width, height);
+        self.resize_box(width, height);
     }
 
     fn reload(&mut self, _cfg: &petweave_core::config::PetConfig) -> Result<(), String> {

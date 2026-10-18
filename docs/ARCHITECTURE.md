@@ -589,7 +589,7 @@ MSRV 分开声明（1.80 / 1.95，D8）。
 
 ## 13. 测试
 
-`#[cfg(test)]` 单测随代码内联，共 **163 项**（宿主 101 + core 38 + settings 24），覆盖：
+`#[cfg(test)]` 单测随代码内联，共 **166 项**（宿主 103 + core 38 + settings 25），覆盖：
 
 - core：配置解析/校验/默认值、MoveMode 解析、HH:MM 时钟解析、`Frame` 绘制与 alpha 合成、
   manifest 解析/校验、反应引用检查。

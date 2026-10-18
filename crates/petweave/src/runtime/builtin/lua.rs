@@ -268,7 +268,9 @@ impl Pet for LuaPet {
     /// contract (Q1A). The script can still call `pet.size` afterwards, which
     /// wins until the next layout change.
     fn resize_to(&mut self, width: u32, height: u32) {
-        self.sprite.lock().unwrap().resize(width, height);
+        // Layout box: scale the artwork but do not change the size the
+        // package/script reports (so "继承" returns to that size).
+        self.sprite.lock().unwrap().resize_box(width, height);
     }
 
     fn tick(&mut self, dt: f32) -> bool {

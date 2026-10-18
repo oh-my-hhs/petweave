@@ -546,20 +546,80 @@ mod tests {
             return;
         }
         assert_eq!(rt.slots()[0].surface_size(), (40, 40));
-        // The sprite reports its own artwork box via `preferred_size`; after
-        // `resize_to` it must match the configured box (not the old 10x10
-        // cells scaled by nothing).
-        let artwork = |rt: &Runtime| rt.slots()[0].instance.preferred_size().unwrap();
-        assert_eq!(artwork(&rt), (40, 40), "instance follows the initial box");
+        // The layout box scales the *artwork*; `preferred_size` stays the
+        // package's intrinsic size so "继承" can return to it.
+        let intrinsic = rt.slots()[0].instance.preferred_size().unwrap();
+        let frame = rt.render_pet("blinky").unwrap().clone();
+        let bbox = crate::graphics::alpha_bbox(&frame, 8).unwrap();
+        assert_eq!((bbox.2, bbox.3), (40, 40), "content fills the initial box");
 
         let outcome = rt.apply(&one(80, 80));
         assert_eq!(outcome.resized, vec!["blinky".to_string()]);
         assert_eq!(rt.slots()[0].surface_size(), (80, 80));
-        assert_eq!(artwork(&rt), (80, 80), "the reload rescaled the artwork");
-        // And the render frame matches the new box.
+        assert_eq!(
+            rt.slots()[0].instance.preferred_size(),
+            Some(intrinsic),
+            "the intrinsic size is not overwritten by a layout box"
+        );
+        // And the render frame/content matches the new box.
         rt.fit_frames();
         let f = &rt.slots()[0].frame;
         assert_eq!((f.width, f.height), (80, 80));
+        let frame = rt.render_pet("blinky").unwrap().clone();
+        let bbox = crate::graphics::alpha_bbox(&frame, 8).unwrap();
+        assert_eq!((bbox.2, bbox.3), (80, 80), "the reload rescaled the artwork");
+    }
+
+    /// Regression for the GUI "继承" flow: after an explicit `width/height`
+    /// is removed, the pet must return to its own (package) size — the layout
+    /// box must not have overwritten `preferred_size`.
+    #[test]
+    fn inheriting_size_returns_to_the_package_size() {
+        let sized = cfg(
+            "[[pets]]\nid = \"blinky\"\nkind = \"sprite\"\npackage = \"blinky\"\nwidth = 40\nheight = 40\n",
+        );
+        let base = cfg("[[pets]]\nid = \"blinky\"\nkind = \"sprite\"\npackage = \"blinky\"\n");
+        let mut rt = Runtime::new(&sized);
+        if !rt.load_errors().is_empty() {
+            eprintln!("skipping: package not resolvable: {:?}", rt.load_errors());
+            return;
+        }
+        let intrinsic = Runtime::new(&base).slots()[0].surface_size();
+        let outcome = rt.apply(&base);
+        assert_eq!(outcome.resized, ["blinky"]);
+        assert_eq!(
+            rt.slots()[0].surface_size(),
+            intrinsic,
+            "clearing width/height returns to the package size"
+        );
+        let frame = rt.render_pet("blinky").unwrap().clone();
+        let bbox = crate::graphics::alpha_bbox(&frame, 8).unwrap();
+        assert_eq!((bbox.2, bbox.3), intrinsic, "content shrinks back too");
+    }
+
+    /// Same regression for script-owned packages (Lua `OWN_PIXELS`): their
+    /// `surface_size` used to read the last scaled sprite size, so inheriting
+    /// kept the explicit box forever.
+    #[test]
+    fn inheriting_size_returns_to_the_lua_package_size() {
+        let sized = cfg(
+            "[[pets]]\nid = \"puro\"\nkind = \"lua\"\npackage = \"puro-pet\"\nwidth = 448\nheight = 280\n",
+        );
+        let base = cfg("[[pets]]\nid = \"puro\"\nkind = \"lua\"\npackage = \"puro-pet\"\n");
+        let mut rt = Runtime::new(&sized);
+        if !rt.load_errors().is_empty() {
+            eprintln!("skipping: package not resolvable: {:?}", rt.load_errors());
+            return;
+        }
+        let intrinsic = Runtime::new(&base).slots()[0].surface_size();
+        assert_ne!(intrinsic, (448, 280), "fixture uses a non-default size");
+        let outcome = rt.apply(&base);
+        assert_eq!(outcome.resized, ["puro"]);
+        assert_eq!(
+            rt.slots()[0].surface_size(),
+            intrinsic,
+            "clearing width/height returns to the script/package size"
+        );
     }
 
     #[test]

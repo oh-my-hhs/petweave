@@ -23,7 +23,7 @@
 ```bash
 cargo build --release -p petweave           # 宿主: target/release/petweave（Rust 1.80+）
 cargo build --release -p petweave-settings  # 设置面板（Rust 1.95+）
-cargo test                                  # 全部测试（163 项；需要 1.95+ 才能编译 settings）
+cargo test                                  # 全部测试（166 项；需要 1.95+ 才能编译 settings）
 ```
 
 GUI 依赖已随仓库的 `.cargo-home` vendored；在没有缓存的机器上首次构建需要联网下载，
@@ -242,8 +242,8 @@ petweave settings                      # 或直接运行 ./target/debug/petweave
   睡眠窗口、镜像；demo 颜色；sprite/lua 的包选择。未写出的值显示「继承 [render]」并有「恢复默认」。
 - 保存并应用：`toml_edit` 逐键更新，**手写注释与键顺序保留**；原子写 + `.bak` + `0600`；
   保存前调用 `Config::validate()`，失败不写盘；保存后通过控制通道立即 `Reload`。
-- 热重载：改宽高会等比缩放素材（BongoCat 也是）、换 `kind`/角色包会自动重建宠物实例；
-  宿主未连接时状态栏会说明"启动后生效"，并在连上后补发重载。
+- 热重载：改宽高会等比缩放素材（BongoCat 也是）、点「继承」删除宽高会回到宠物固有尺寸；
+  换 `kind`/角色包会自动重建宠物实例；宿主未连接时状态栏会说明"启动后生效"，并在连上后补发重载。
 - 宿主离线时仍可编辑保存（下次启动生效）；配置文件被其他程序改动时拒绝覆盖并提示重新加载。
 
 布局画布/缩略图预览（G3）与诊断页（G4）尚未实现，路线见 [`docs/GUI_ROADMAP.md`](docs/GUI_ROADMAP.md)。

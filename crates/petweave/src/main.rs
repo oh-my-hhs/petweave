@@ -28,7 +28,9 @@ fn main() -> Result<()> {
 
     // Subcommands that do not need the config/runtime first.
     match &cli.command {
-        Some(Command::Doctor { apply }) => return run_doctor(*apply),
+        Some(Command::Doctor { apply, config }) => {
+            return run_doctor(*apply, config.as_deref())
+        }
         Some(Command::ListDevices) => {
             print_keyboards();
             return Ok(());
@@ -44,7 +46,13 @@ fn main() -> Result<()> {
 
     // Config: file (if present) -> CLI overrides -> validation.
     let config_path = cli.config.clone().or_else(default_config_path);
-    let mut config = Config::load(config_path.as_deref())?;
+    let (mut config, unknown_keys) = Config::load_with_warnings(config_path.as_deref())?;
+    // Typos in the config (`surface_width` for `width`) must not be silent:
+    // they are ignored by the parser, so say so once at startup.
+    for key in &unknown_keys {
+        eprintln!("warning: unknown config key {key:?} (ignored)");
+    }
+    config.validate()?;
     apply_cli_overrides(&mut config, &cli)?;
 
     // Tracing: RUST_LOG env wins, else config log_level (CLI -v = debug).
@@ -95,6 +103,12 @@ fn export_preview(config: &Config, pet_id: Option<&str>, path: &Path) -> Result<
         eprintln!("warning: pet {id:?} failed to load: {err}");
     }
     let mut runtime = runtime;
+    // No animation loop runs here: give pets that place themselves from a
+    // script one tick to settle (a `pet.size` / `pet.play` in `on_tick` is
+    // part of the loaded state), then size every render frame to the surface
+    // the layout resolved (a configured `width/height` included).
+    runtime.tick_settle();
+    runtime.fit_frames();
     let frame = match pet_id {
         Some(id) => runtime
             .render_pet(id)
@@ -247,15 +261,43 @@ fn run_package_command(cmd: &Option<Command>, _cli: &Cli) -> Result<()> {
 
 // --- doctor ----------------------------------------------------------------
 
+/// Right-hand side of an unknown-key warning: the setting the user most
+/// likely meant (`surface_width` -> `width`, `margins` -> `margin_*`, …).
+fn suggest_key(key: &str) -> Option<&'static str> {
+    let leaf = key.rsplit('.').next().unwrap_or(key);
+    let leaf = leaf.trim_end_matches(|c: char| c.is_ascii_digit() || c == ']');
+    Some(match leaf {
+        "surface_width" | "width_px" | "w" => "width",
+        "surface_height" | "height_px" | "h" => "height",
+        "margins" | "margin" => "margin_top / margin_right / margin_bottom / margin_left",
+        "package" | "pkg" => "package",
+        "anchor_point" => "anchor",
+        "layer_shell" => "layer",
+        _ => return None,
+    })
+}
+
 const UDEV_UACCESS_RULE: &str = "SUBSYSTEM==\"input\", KERNEL==\"event*\", TAG+=\"uaccess\"\n";
 
-fn run_doctor(apply: bool) -> Result<()> {
+fn run_doctor(apply: bool, config: Option<&Path>) -> Result<()> {
     println!("== petweave doctor ==");
 
     // Config + pets.
-    match default_config_path() {
-        Some(p) => match Config::load(Some(&p)) {
-            Ok(cfg) => {
+    match config.map(Path::to_path_buf).or_else(default_config_path) {
+        Some(p) => match Config::load_with_warnings(Some(&p)) {
+            Ok((cfg, unknown)) => {
+                for key in &unknown {
+                    println!(
+                        "[warn]  unknown config key {key:?} (ignored){}",
+                        match suggest_key(key) {
+                            Some(right) => format!(" — did you mean {right:?}?"),
+                            None => String::new(),
+                        }
+                    );
+                }
+                if let Err(e) = cfg.validate() {
+                    println!("[fail]  config validation: {e}");
+                }
                 println!(
                     "[ok]    config: {} (valid, {} pet(s){})",
                     p.display(),
@@ -288,6 +330,15 @@ fn run_doctor(apply: bool) -> Result<()> {
                 }
                 // Packages load? (no surface needed)
                 let rt = Runtime::new(&cfg);
+                for slot in rt.slots() {
+                    // What the host will actually put on screen: the pet's
+                    // own size wins over `[[pets]].width/height`, which may
+                    // differ from the placement defaults shown above.
+                    let (w, h) = slot.surface_size();
+                    if (w, h) != (slot.pet.placement.width, slot.pet.placement.height) {
+                        println!("            surface {w}x{h} (from the pet)");
+                    }
+                }
                 for (id, err) in rt.load_errors() {
                     println!("[fail]  pet {id:?} cannot be loaded: {err}");
                 }

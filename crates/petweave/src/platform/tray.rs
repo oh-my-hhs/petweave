@@ -3,8 +3,9 @@
 //! The tray shows the first pet as its icon. Left click toggles the
 //! visibility of every pet; the menu offers show/hide-all, one submenu per
 //! pet (show/hide + its movement mode), the global movement-mode radio group
-//! (drag / physics / fixed) and quit. Labels and state are read from shared
-//! state at menu-open time, so they are always current.
+//! (drag / physics / fixed), the render layer (top / overlay — overlay keeps
+//! the pet above fullscreen windows) and quit. Labels and state are read from
+//! shared state at menu-open time, so they are always current.
 //!
 //! Spawning uses `assume_sni_available(true)`: if no StatusNotifierWatcher
 //! exists yet (e.g. niri without a tray daemon), the service keeps waiting
@@ -27,6 +28,12 @@ pub struct TrayPet {
     pub mode: MoveMode,
 }
 
+/// Layers the tray lets the user pick (Q: keep pets above fullscreen).
+pub const TRAY_LAYERS: &[(&str, &str)] = &[
+    ("top", "Top（常规，全屏时隐藏）"),
+    ("overlay", "Overlay（全屏时仍显示）"),
+];
+
 /// State shared between the host and the tray thread.
 #[derive(Debug, Default)]
 pub struct TrayShared {
@@ -34,6 +41,8 @@ pub struct TrayShared {
     pub visible: bool,
     /// Current movement mode of the first pet (global radio selection).
     pub mode: MoveMode,
+    /// Current layer-shell layer of the first pet ("" or unknown = top).
+    pub layer: String,
     /// Tray title/tooltip (pet name or "N 只宠物").
     pub title: String,
     /// Running pets, in config order.
@@ -104,9 +113,9 @@ impl ksni::Tray for PetTray {
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
-        let (visible, mode, pets) = {
+        let (visible, mode, layer, pets) = {
             let shared = self.shared.lock().unwrap();
-            (shared.visible, shared.mode, shared.pets.clone())
+            (shared.visible, shared.mode, shared.layer.clone(), shared.pets.clone())
         };
         let mut items: Vec<MenuItem<Self>> = vec![StandardItem {
             label: if visible {
@@ -218,6 +227,39 @@ impl ksni::Tray for PetTray {
             .into(),
         );
         items.push(MenuItem::Separator);
+        // Render layer: `overlay` stays above fullscreen windows (top is
+        // hidden by the fullscreen auto-hide, the layer-shell default).
+        let selected_layer = TRAY_LAYERS
+            .iter()
+            .position(|(id, _)| *id == layer)
+            .unwrap_or(0);
+        items.push(
+            SubMenu {
+                label: format!(
+                    "渲染层级：{}",
+                    TRAY_LAYERS[selected_layer].1.split('（').next().unwrap_or("Top")
+                ),
+                submenu: vec![RadioGroup {
+                    selected: selected_layer,
+                    select: Box::new(|this: &mut Self, index: usize| {
+                        if let Some((id, _)) = TRAY_LAYERS.get(index) {
+                            let _ = this.tx.send(HostCommand::SetLayer((*id).to_string()));
+                        }
+                    }),
+                    options: TRAY_LAYERS
+                        .iter()
+                        .map(|(_, label)| RadioItem {
+                            label: (*label).to_string(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                }
+                .into()],
+                ..Default::default()
+            }
+            .into(),
+        );
+        items.push(MenuItem::Separator);
         items.push(
             StandardItem {
                 label: "退出 PetWeave".into(),
@@ -319,6 +361,7 @@ mod tests {
         Arc::new(Mutex::new(TrayShared {
             visible: true,
             mode: MoveMode::Physics,
+            layer: "top".into(),
             title: "PetWeave".into(),
             pets,
         }))
@@ -410,7 +453,8 @@ mod tests {
         let mut tray = PetTray::new(shared, tx, None, "PetWeave".into());
 
         let items = tray.menu();
-        // [show/hide, sep, mode submenu, sep, quit] (no pets)
+        // [show/hide, sep, mode submenu, sep, layer submenu, sep, quit]
+        assert_eq!(items.len(), 7, "menu shape changed");
         let ksni::menu::MenuItem::SubMenu(sub) = &items[2] else {
             panic!("third item should be the mode submenu");
         };
@@ -427,6 +471,40 @@ mod tests {
         match rx.recv() {
             Ok(HostCommand::SetMoveMode(MoveMode::Drag)) => {}
             other => panic!("expected SetMoveMode(Drag), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn menu_lists_render_layers_with_selection() {
+        let shared = Arc::new(Mutex::new(TrayShared {
+            layer: "overlay".into(),
+            ..Default::default()
+        }));
+        let (tx, rx) = calloop::channel::channel::<HostCommand>();
+        let mut tray = PetTray::new(shared, tx, None, "PetWeave".into());
+
+        let items = tray.menu();
+        let ksni::menu::MenuItem::SubMenu(sub) = &items[4] else {
+            panic!("fifth item should be the layer submenu");
+        };
+        assert!(sub.label.starts_with("渲染层级"), "{}", sub.label);
+        let ksni::menu::MenuItem::RadioGroup(group) = &sub.submenu[0] else {
+            panic!("submenu should hold a radio group");
+        };
+        let labels: Vec<_> = group.options.iter().map(|o| o.label.clone()).collect();
+        assert_eq!(labels, ["Top（常规，全屏时隐藏）", "Overlay（全屏时仍显示）"]);
+        assert_eq!(group.selected, 1, "overlay preselected from shared state");
+
+        // Choosing Top sends the command with the layer id.
+        (group.select)(&mut tray, 0);
+        match rx.recv() {
+            Ok(HostCommand::SetLayer(layer)) => assert_eq!(layer, "top"),
+            other => panic!("expected SetLayer(top), got {other:?}"),
+        }
+        (group.select)(&mut tray, 1);
+        match rx.recv() {
+            Ok(HostCommand::SetLayer(layer)) => assert_eq!(layer, "overlay"),
+            other => panic!("expected SetLayer(overlay), got {other:?}"),
         }
     }
 }

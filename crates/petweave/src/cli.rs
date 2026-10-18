@@ -68,6 +68,9 @@ pub enum Command {
         /// Install the udev uaccess rule (needs root / sudo).
         #[arg(long)]
         apply: bool,
+        /// Config file to check (defaults to the standard location).
+        #[arg(short = 'c', long)]
+        config: Option<PathBuf>,
     },
     /// Alias for `--list-devices`: list detected keyboard devices.
     ListDevices,

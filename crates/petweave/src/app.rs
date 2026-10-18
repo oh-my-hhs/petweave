@@ -57,6 +57,9 @@ pub enum HostCommand {
     SetMoveMode(MoveMode),
     /// Switch the movement mode of one pet.
     SetPetMoveMode { id: String, mode: MoveMode },
+    /// Switch the layer-shell layer of every pet (tray 渲染层级 menu).
+    /// `overlay` keeps the pet above fullscreen windows.
+    SetLayer(String),
     /// Quit the host (tray menu).
     Quit,
 }
@@ -213,8 +216,15 @@ impl PetRuntime {
 
     /// Whether a fullscreen window blanks this pet (overlay pets opt out).
     pub fn hidden_by_fullscreen(&self) -> bool {
-        self.render.layer != "overlay" && !self.render.disable_fullscreen_hide
+        hidden_by_fullscreen(&self.render)
     }
+}
+
+/// A pet is hidden while a window is fullscreen unless it is on the
+/// `overlay` layer or the package/user opted out explicitly. This is what
+/// makes the tray's "渲染层级 → Overlay" keep the pet above fullscreen apps.
+pub fn hidden_by_fullscreen(render: &petweave_core::config::RenderConfig) -> bool {
+    render.layer != "overlay" && !render.disable_fullscreen_hide
 }
 
 /// Top-level host state. Also the `Data` type for every sctk/calloop handler.
@@ -548,8 +558,13 @@ impl App {
         let Some(path) = &self.config_path else {
             return;
         };
-        let mut cfg = match Config::load(Some(path)) {
-            Ok(c) => c,
+        let mut cfg = match Config::load_with_warnings(Some(path)) {
+            Ok((c, unknown)) => {
+                for key in &unknown {
+                    tracing::warn!("config: unknown key {key:?} (ignored)");
+                }
+                c
+            }
             Err(e) => {
                 tracing::error!("config reload failed (keeping old config): {e}");
                 return;
@@ -638,6 +653,42 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Switch the layer-shell layer of every pet (tray "渲染层级").
+    ///
+    /// Runtime override: the config file is untouched and the next reload
+    /// re-applies it. `overlay` also opts out of the fullscreen auto-hide, so
+    /// the pet stays visible above fullscreen windows.
+    fn set_layer(&mut self, layer: &str) {
+        if !matches!(layer, "background" | "bottom" | "top" | "overlay") {
+            tracing::warn!("ignoring unknown layer {layer:?}");
+            return;
+        }
+        let mut changed = 0;
+        for pet in self.pets.iter_mut() {
+            if pet.render.layer == layer {
+                continue;
+            }
+            tracing::info!("pet {:?}: layer {layer}", pet.id);
+            pet.render.layer = layer.to_string();
+            changed += 1;
+        }
+        if changed == 0 {
+            return;
+        }
+        let ids: Vec<String> = self.pets.iter().map(|p| p.id.clone()).collect();
+        for id in ids {
+            let Some(pos) = self.pets.iter().position(|p| p.id == id) else {
+                continue;
+            };
+            let render = self.pets[pos].render.clone();
+            if let Err(e) = self.pets[pos].surface.apply_props(&render) {
+                tracing::warn!("pet {id:?}: cannot apply layer: {e:#}");
+            }
+        }
+        self.sync_tray();
+        self.needs_redraw = true;
+    }
+
     /// Let `id` fall from where it currently is (enter physics mode).
     fn start_pet_physics(&mut self, id: &str) {
         let Some(pos) = self.pets.iter().position(|p| p.id == id) else {
@@ -653,6 +704,11 @@ impl App {
     /// Mirror visibility/mode state into the tray shared state.
     fn sync_tray(&mut self) {
         let mode = self.pets.first().map(|p| p.move_mode).unwrap_or_default();
+        let layer = self
+            .pets
+            .first()
+            .map(|p| p.render.layer.clone())
+            .unwrap_or_else(|| "top".to_string());
         let all_visible = !self.pets.is_empty() && self.pets.iter().all(|p| p.visible);
         let title = match self.pets.len() {
             0 => "PetWeave".to_string(),
@@ -676,6 +732,7 @@ impl App {
             let mut s = shared.lock().unwrap();
             s.visible = all_visible;
             s.mode = mode;
+            s.layer = layer;
             s.title = title;
             s.pets = pets;
         }
@@ -1017,6 +1074,7 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
                     HostCommand::TogglePetVisible(id) => app.toggle_pet_visible(&id),
                     HostCommand::SetMoveMode(mode) => app.set_move_mode(mode),
                     HostCommand::SetPetMoveMode { id, mode } => app.set_pet_move_mode(&id, mode),
+                    HostCommand::SetLayer(layer) => app.set_layer(&layer),
                     HostCommand::Quit => {
                         tracing::info!("quit requested from tray");
                         app.exit = true;
@@ -1104,6 +1162,11 @@ fn spawn_tray(app: &mut App, host_tx: calloop::channel::Sender<HostCommand>) {
     let shared = std::sync::Arc::new(std::sync::Mutex::new(TrayShared {
         visible: true,
         mode: app.pets.first().map(|p| p.move_mode).unwrap_or_default(),
+        layer: app
+            .pets
+            .first()
+            .map(|p| p.render.layer.clone())
+            .unwrap_or_else(|| "top".to_string()),
         title: title.clone(),
         pets: app
             .pets
@@ -1211,6 +1274,26 @@ mod tests {
         m.cancel();
         assert!(m.drag.is_none() && m.physics.is_none() && m.pending_position.is_none());
         assert!(!m.is_moving());
+    }
+
+    /// `overlay` is the layer that stays visible above fullscreen windows:
+    /// the fullscreen auto-hide skips it (`hidden_by_fullscreen`), which is
+    /// what the tray's "渲染层级 → Overlay" option relies on.
+    #[test]
+    fn overlay_layer_survives_fullscreen() {
+        use petweave_core::config::RenderConfig;
+        let mut render = RenderConfig::default();
+        render.layer = "top".into();
+        render.disable_fullscreen_hide = false;
+        assert!(hidden_by_fullscreen(&render), "top is hidden for fullscreen");
+        render.layer = "overlay".into();
+        assert!(!hidden_by_fullscreen(&render), "overlay stays visible");
+        render.layer = "top".into();
+        render.disable_fullscreen_hide = true;
+        assert!(!hidden_by_fullscreen(&render), "explicit opt-out");
+        render.layer = "bottom".into();
+        render.disable_fullscreen_hide = false;
+        assert!(hidden_by_fullscreen(&render));
     }
 
     #[test]

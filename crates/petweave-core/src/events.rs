@@ -50,4 +50,8 @@ pub enum Event {
 
     /// System resource snapshot (reserved; sysinfo integration in M1).
     System(SystemSnapshot),
+
+    /// The pointer wheel turned over the pet's own surface (horizontal
+    /// scrolling is reported as vertical). `steps` > 0 = up/away.
+    Scroll { steps: f64 },
 }

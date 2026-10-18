@@ -178,6 +178,9 @@ impl Runtime {
             pet.instance.height,
             (pet.placement.width, pet.placement.height),
         );
+        // The artwork follows the box the layout resolved (configured size);
+        // `resize_to` is a no-op for pets whose content size is fixed.
+        instance.resize_to(w, h);
         Ok(Slot {
             pet: pet.clone(),
             instance,
@@ -234,6 +237,10 @@ impl Runtime {
     }
 
     /// Advance the animation clock; `true` if any pet wants a redraw.
+    ///
+    /// A pet whose surface size changed during the tick (a Lua `pet.size`,
+    /// a layout change reaching the pet) also counts: the slot's render
+    /// frame is resized here so `render_all` never draws a stale size.
     pub fn tick_all(&mut self) -> bool {
         let now = Instant::now();
         let dt = self
@@ -245,8 +252,40 @@ impl Runtime {
         let mut changed = false;
         for slot in self.slots.iter_mut() {
             changed |= slot.instance.tick(dt);
+            let (w, h) = slot.surface_size();
+            if (slot.frame.width, slot.frame.height) != (w, h) {
+                slot.fit_frame();
+                changed = true;
+            }
         }
         changed
+    }
+
+    /// One tick without an animation loop (`--preview`): pets that choose
+    /// their own size in `on_tick` (script-owned Lua packages) are settled
+    /// first; every other pet is left untouched so its preview is the plain
+    /// first frame.
+    pub fn tick_settle(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if slot.instance.settles_on_tick() {
+                slot.instance.tick(0.0);
+                slot.fit_frame();
+            }
+        }
+    }
+
+    /// Resize every slot's render frame to its current surface size (after a
+    /// config/layout change, before a one-shot render such as `--preview`).
+    pub fn fit_frames(&mut self) {
+        for slot in self.slots.iter_mut() {
+            let (w, h) = slot.surface_size();
+            if (slot.frame.width, slot.frame.height) != (w, h) {
+                slot.fit_frame();
+            }
+            // The artwork follows the box: resizing the frame alone would
+            // draw the old pixels into a bigger canvas.
+            slot.instance.resize_to(w, h);
+        }
     }
 
     /// Earliest instant any pet wants to be woken up (e.g. paw-hold expiry).
@@ -317,6 +356,11 @@ impl Runtime {
                 }
                 slot.pet = pet.clone();
                 if slot.surface_size() != size_before {
+                    // Tell the pet about its new box (the artwork scales into
+                    // it) and resize the render frame: changing only the
+                    // frame would present the old pixels in a bigger surface.
+                    let (w, h) = slot.surface_size();
+                    slot.instance.resize_to(w, h);
                     slot.fit_frame();
                     outcome.resized.push(pet.id.clone());
                 }
@@ -422,6 +466,67 @@ mod tests {
         width = 32
         height = 32
     "##;
+
+    /// Q1A/Q2A: `[[pets]].width/height` is the box a pet gets on screen (it
+    /// beats the pet's own preferred size), one given side keeps the
+    /// artwork's aspect ratio, and `fit_frames` scales the artwork into it.
+    #[test]
+    fn configured_size_overrides_pet_size_and_scales_content() {
+        let text = format!(
+            "{}[[pets]]\nid = \"puro\"\nkind = \"lua\"\npackage = \"puro-pet\"\nwidth = 448\nheight = 280\n\n\
+             [[pets]]\nid = \"puro-h\"\nkind = \"lua\"\npackage = \"puro-pet\"\nwidth = 448\n",
+            "[render]\nwidth = 64\nheight = 64\n"
+        );
+        let config = cfg(&text);
+        let mut rt = Runtime::new(&config);
+        if !rt.load_errors().is_empty() {
+            // Packages are resolved from the installed repo; skip when the
+            // test environment has none.
+            eprintln!("skipping: packages not resolvable: {:?}", rt.load_errors());
+            return;
+        }
+        let sizes: Vec<_> = rt.slots().iter().map(|s| s.surface_size()).collect();
+        assert_eq!(sizes[0], (448, 280), "the configured box wins");
+        assert_eq!(sizes[1], (448, 280), "one side keeps the 8:5 aspect");
+        rt.fit_frames();
+        for slot in rt.slots() {
+            let f = &slot.frame;
+            assert_eq!((f.width, f.height), slot.surface_size(), "frame follows the box");
+        }
+    }
+
+    /// A size change applied through a reload must reach the pet instance
+    /// (the artwork scales), not only the render frame: presenting a bigger
+    /// frame with old pixels shows the pet in its old size (real bug fixed
+    /// after the size contract landed).
+    #[test]
+    fn reload_size_change_scales_the_pet_instance() {
+        let one = |w: u32, h: u32| {
+            cfg(&format!(
+                "[[pets]]\nid = \"blinky\"\nkind = \"sprite\"\npackage = \"blinky\"\nwidth = {w}\nheight = {h}\n"
+            ))
+        };
+        let mut rt = Runtime::new(&one(40, 40));
+        if !rt.load_errors().is_empty() {
+            eprintln!("skipping: package not resolvable: {:?}", rt.load_errors());
+            return;
+        }
+        assert_eq!(rt.slots()[0].surface_size(), (40, 40));
+        // The sprite reports its own artwork box via `preferred_size`; after
+        // `resize_to` it must match the configured box (not the old 10x10
+        // cells scaled by nothing).
+        let artwork = |rt: &Runtime| rt.slots()[0].instance.preferred_size().unwrap();
+        assert_eq!(artwork(&rt), (40, 40), "instance follows the initial box");
+
+        let outcome = rt.apply(&one(80, 80));
+        assert_eq!(outcome.resized, vec!["blinky".to_string()]);
+        assert_eq!(rt.slots()[0].surface_size(), (80, 80));
+        assert_eq!(artwork(&rt), (80, 80), "the reload rescaled the artwork");
+        // And the render frame matches the new box.
+        rt.fit_frames();
+        let f = &rt.slots()[0].frame;
+        assert_eq!((f.width, f.height), (80, 80));
+    }
 
     #[test]
     fn loads_one_slot_per_enabled_pet() {

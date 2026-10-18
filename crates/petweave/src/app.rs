@@ -745,6 +745,27 @@ impl App {
                     }
                 }
             }
+            PointerEventKind::Axis { vertical, horizontal, .. } => {
+                // Wheel turns over the pet: a hop (and, for Lua pets, an
+                // `on_scroll` callback). Discrete wheels send one axis event
+                // per notch; continuous devices send a fraction of a notch.
+                let steps = if vertical.absolute.abs() >= horizontal.absolute.abs() {
+                    vertical.discrete
+                } else {
+                    horizontal.discrete
+                };
+                if steps == 0 {
+                    return;
+                }
+                let id = self.pets[idx].id.clone();
+                if self
+                    .runtime
+                    .on_event_to(&id, Event::Scroll { steps: steps as f64 })
+                {
+                    self.needs_redraw = true;
+                }
+                return;
+            }
             PointerEventKind::Motion { .. } => {
                 let pet = &mut self.pets[idx];
                 if let Some(drag) = &mut pet.motion.drag {

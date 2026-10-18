@@ -10,6 +10,9 @@
 | M0 项目骨架 | ✅ 完成 | 编译通过、单测通过、niri 上实测可显示 |
 | M1 BongoCat 移植 | ✅ 完成 | 爪击动画/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
 | M2 SDK / 角色包 | ✅ 完成 | 包格式/声明式精灵宠物/Lua 沙箱运行时/CLI/示例包/SVG 渲染 |
+| M2.5 可配置按键/图案 | ⏳ 规划 | 包声明配置项 + 改 config 生效（见下） |
+| M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS`；两个参考包端到端测试通过 |
+| M2.7 尺寸与摆放契约（GUI 前置） | ✅ 完成 | 尺寸优先级 `[[pets]]` > 宠物 > `[render]`、等比缩放不拉伸、删除 anchor/bob、`pet.offset(dx,dy)` + `padding`；`Pet::resize_to` / `Runtime::fit_frames` 让配置尺寸真正缩放内容 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存（设置面板移交 M3.5） |
 | M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物运行时与配置 v2 ✅；GUI 独立进程（egui/eframe）待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
@@ -123,6 +126,99 @@
 - [ ] 隐私审计：确认键码默认不落盘、debug 开关显式化
 
 ---
+
+## M2.5 可配置按键与输入图案（proposal）
+
+> 背景：包内角色（如 `packages/krill-pet`、`packages/puro-pet`）已具备
+> `pattern0/1/2` 三类"按键特效"素材：按 1/2/3 键分别显示 `pattern0/1/2`，按住停住，
+> 松手回 `basic`。但**哪些物理按键算"焦点键"(left/right 交替)、哪些键触发哪个 pattern、
+> 长按多久开始抖动、抖动幅度多大**目前都写死在包脚本里（`main.lua` 顶部的
+> `KEYS_LEFT`/`KEYS_RIGHT`/`PATTERN`/`SHOW_H`/`BOB_PX`/`HOLD_SEC` 常量），用户无法改。
+> 目标：**包声明可配置项及默认值 → 用户只改 config**，宿主与包都不需要重新打包。
+
+- [ ] M2.5-1 包清单声明配置项：`[[pets.options]]`（或 `[options]`）数组，每项
+      `key`（命名空间内唯一）、`label`（中文说明，GUI 表单标题）、`type`
+      （`string|int|float|bool|keycode|enum|keycode-list`）、`default`、`min`/`max`、
+      `enum`（可选值 + 显示名）、`description`。`petweave-core::manifest` 解析 +
+      类型校验（默认值必须满足自身约束），错误信息点名 `options.<key>`。
+- [ ] M2.5-2 用户配置覆盖：`[[pets]].options`（`[pets.options]` 表）按 key 覆盖包默认值；
+      `Config::validate()` 负责校验（单点数来源，GUI 复用），未声明的 key 报错而不是静默丢弃；
+      `[[pets]]` 省略该表时行为与现在完全一致（向后兼容）。
+- [ ] M2.5-3 运行时下发：`PetConfig` 新增 `options`（已落地的通用通道见下），
+      `<pets>.options` → `PetConfig.options` → Lua `config.*`；Lua 侧只暴露包声明的 key，
+      读出值已是"默认值 + 用户覆盖"后的最终值。
+- [ ] M2.5-4 按键映射可配置：包用 `type = "keycode-list"` 声明 `keys.left` / `keys.right`
+      （EV_KEY 码），未配置时回退到内置物理左右手映射；按"键码 → 槽位（left/right）"建表，
+      同一物理键在两端都出现时以右/左声明顺序为准并给出告警。
+- [ ] M2.5-5 长按与 pattern 档位：`hold_ms`（按下多久算长按）、`pattern.cycle_ms`、
+      `pattern.interval_ms`（长按后 pattern0/1/2 轮流显示的速度）作为配置项，
+      替代目前写死在 `main.lua` 里的 `HOLD_MS = 0.35` 等常量。
+- [ ] M2.5-6 面向 Lua 的读取 API：`config.get(key)` / `config.keys()` / `config.number(key)`，
+      沙箱内只读；配置文件热重载时重新下发（`Pet::reload` → `config` 刷新），不重启进程。
+- [ ] M2.5-7 GUI 表单自动生成：设置面板按清单 `options` 渲染控件（类型 → 控件，
+      `label/description` → 文案），用户"改 config 即完成配置"，不写 TOML。
+- [ ] M2.5-8 文档与示例：`docs/PACKAGES.md` 新增"可配置项"章节；两个示例包把
+      按键映射/长按时长提升为可配置项，`petweave.toml.example` 给出覆盖示例。
+- [ ] M2.5-9 校验与迁移测试：未知 key、类型不符、越界、枚举非法值、旧配置缺省全覆盖。
+
+> 落地顺序建议：M2.5-1/2/3 为通道（一次性打通，所有包受益）→ 4/5/6 让现有包"零改包"可配
+> → 7 交给 M3.5 GUI → 8/9 收尾。在通道落地前，包内脚本的常量（`KEY_LEFT`/`KEY_RIGHT`/
+> `HOLD_MS`/`PATTERN_STEP`）就是当前唯一可调点，修改需要重新打包。
+
+## M2.6 Lua 宿主按键与尺寸（已解决，结论写入文档）
+
+> 做参考包 `packages/krill-pet` / `packages/puro-pet` 时，包内行为"没有按预期运行"。
+> 排查结论：**宿主 Lua 状态本身没有丢失**，问题出在三处契约不一致，现已修复。
+
+- [x] M2.6-1 `[[reactions]]` 解析不到：`[[reactions]]` 数组被反序列化成 `keys` 字段，
+  而代码读的是 `reactions.extra`，于是逐键反应表永远为空。已改为自定义 `Deserialize`：
+  数组元素进入 `extra`，元素里的具名字段（`idle = …`）落到具名反应；`[reactions]` 表
+  写法与 `[[reactions.extra]]` 旧拼法继续有效。
+- [x] M2.6-2 `[pet]` 的连字符键名被静默忽略：`PetDecl` 没有 `rename_all`，文档写的
+  `key-mode` / `bob-pixels` / `anchor-padding` 解析后全是默认值（这就是"press 模式没生效"）。
+  已加 `serde(alias = …)`，下划线与连字符两种写法等价，并有测试 `pet_knobs_accept_both_spellings`。
+- [x] M2.6-3 `pet.size` 的语义与包脚本的假设相反：旧实现把 `pet.size(w, h)` 当"把图片拉伸到
+  `w`x`h`"，而包脚本以为它是"surface 高度"（图片贴顶画、下沿被裁）。现统一为：
+  **`pet.size` 设置表面尺寸，图片不缩放、按 `anchor_mode` 摆放、超出部分裁掉**；
+  新增 `pet.offset(px)` 做精确像素位移；`anchor_mode = "top" | "bottom"` 决定表面加高
+  的方向。内置 `bob-pixels` 只对 `top` 锚点生效（贴底图片上抬会在脚下露空白）。
+- [x] M2.6-4 脚本与声明式层抢键：`kind = "lua"` 的包同时被 sprite 的 `press` 模式映射按键，
+  把脚本 `pet.play` 的结果覆盖掉。新增脚本声明 `OWN_KEYS`（脚本独占按键，精灵退化为画布）
+  与 `OWN_PIXELS`（保留声明式按键，但允许脚本精确摆放）。
+- [x] M2.6-5 空闲 CPU：声明 `OWN_KEYS`/`OWN_PIXELS` 的脚本在动画期间由宿主按 16ms 步进 tick，
+  静止（没有按住、没有上跳）时 `next_deadline()` 返回 `None`，宿主照常阻塞在 poll。
+- [x] M2.6-6 回归补齐：`press_packages_load` / `press_packages_behave` /
+  `press_packages_sleep_when_idle_and_wake_on_keys` 三个端到端测试直接用仓库里的两个包驱动
+  真实按键事件（交替、按住、表情、上跳 6px、落回 224x140），`sandbox_globals_behave`、
+  `script_locals_survive_load` 覆盖沙箱行为。
+- [ ] M2.6-7 气泡像素断言（`script_handlers_fire_and_play_animations`）：在测试进程里仍不稳定，
+  暂保持只断言气泡状态；与本次按键/尺寸问题无关，留待单独排查。
+
+## M3.1 默认移动模式与渲染层级（已完成）
+
+- [x] 默认移动模式由 `physics` 改为 `drag`（`RenderConfig::default().physics = false`）；
+      仍可用 `mode = "physics"` 或旧 `physics = true` 逐只/全局开启重力。
+- [x] 托盘新增「渲染层级」子菜单：`Top`（常规，全屏时隐藏）/ `Overlay`（全屏时仍显示）。
+      `HostCommand::SetLayer` 在主线程对每只宠物 `apply_props`；overlay 层绕过全屏自动隐藏。
+
+## M2.7 尺寸与摆放契约（GUI 前置，已定案）
+
+> 做设置界面时要能"调大小、调位置"，先得把底层契约定死，否则 UI、协议、配置三处都要返工。
+> 决策（Q1A/Q2A/Q3B/Q4A/Q5A/Q6A+B/Q7A）与 `docs/GUI_ROADMAP.md` §13 Q9–Q11 一致。
+
+- [x] 尺寸优先级：显式 `[[pets]].width/height` > 宠物 `preferred_size()` > `[render]`；
+      只写一边时另一边按原图比例推算（`petweave_core::pet::scaled_for`）。
+- [x] 等比缩放：内容按盒子比例缩放（`scale_to_fit`），永不拉伸；`Pet::resize_to` +
+      `Runtime::fit_frames` / `tick_all` 在尺寸变化后同时更新渲染帧与图片。
+- [x] 删除 `bob_pixels` / `anchor_padding` / `anchor_x` / `anchor_mode` 与内置弹跳；
+      旧包的这些键被忽略、仍可加载。
+- [x] 摆放模型：图片贴表面左下角、`pet.offset(dx, dy)`（y 向下）精确位移，
+      `pet.padding` 四周预留余量；`pet.bump()` 移除。
+- [x] anchor 保持为 layer-shell 实现细节：配置仍用 `anchor/margin_*`，GUI 层翻译为
+      x/y + 对齐方式，不新增绝对坐标键（Q4A）。
+- [x] `petweave doctor -c <config>`：诊断可针对任意配置文件（GUI 诊断页复用）。
+- [x] 包体回归：`packages/` 下 bongo-sprite / blinky / lua-demo / krill-pet / puro-pet
+      全部按新模型预览通过。
 
 ## 备注
 

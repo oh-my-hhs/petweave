@@ -31,10 +31,15 @@ scan_interval_secs = 30
 # key it does not set itself.
 # ---------------------------------------------------------------------------
 [render]
-# Default surface size in pixels (bongo overrides this with cat_height).
+# Default surface size in pixels for pets that do not set their own.
+# A pet's own size (bongo: cat_height, packages: pet.toml surface_width/
+# surface_height) wins over this; an explicit [[pets]].width / height wins
+# over everything and scales the artwork proportionally (never distorted).
 width = 256
 height = 256
 # wlr-layer-shell layer: background | bottom | top | overlay.
+# `overlay` keeps the pet above fullscreen windows; it is also switchable at
+# runtime from the tray "渲染层级" menu (Top / Overlay).
 layer = "top"
 # Anchor: combination of top | bottom | left | right (| separated).
 anchor = "bottom"
@@ -51,17 +56,18 @@ disable_fullscreen_hide = false
 # Click-through: only the pet's opaque shape receives clicks.
 click_through = true
 # Movement mode — also switchable at runtime from the tray "移动模式" menu:
+#   drag    = the pet follows dragging and stays where it is dropped (default)
 #   physics = drag + gravity/collision: the pet falls and settles
-#   drag    = the pet follows dragging, no physics
 #   fixed   = the pet is pinned and cannot be moved
-mode = "physics"
+mode = "drag"
 
 # ---------------------------------------------------------------------------
 # [[pets]] — one block per pet instance (at most 12). `id` is optional and
 # generated as "{kind}-{n}" when omitted; it is stable and used by the tray
 # (and later by the settings panel).
 # Every [render] key may be repeated here to override it for this pet only:
-# width / height / layer / anchor / margin_* / output /
+# width / height (user-facing size; `surface_width`/`surface_height` are the
+# *package* spelling and are ignored here) / layer / anchor / margin_* / output /
 # disable_fullscreen_hide / click_through / mode
 # ---------------------------------------------------------------------------
 
@@ -100,7 +106,7 @@ sleep_end = "06:00"
 # anchor = "bottom|right"
 # margin_right = 32
 # margin_bottom = 24
-# mode = "drag"
+# mode = "physics"   # opt into gravity for this pet only
 #
 # [pets.bongo]
 # cat_height = 70

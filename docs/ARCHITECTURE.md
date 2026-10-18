@@ -275,6 +275,11 @@ pub enum HostCommand {
   因此"跳"到别处。
 - **固定**（`MoveMode::Fixed`）：不拖拽，但点击仍会作为 `Event::Pointer` 传给宠物。
 - **移动模式切换**（托盘）：改 `move_mode` 并清空 motion；进入 physics 时从当前 rect 开始下落。
+  默认移动模式是 `drag`（`RenderConfig::default().physics = false`），`physics = true` 或
+  `mode = "physics"` 才启用重力。
+- **渲染层级切换**（托盘「渲染层级」）：`SetLayer(top|overlay)` 在主线程改每只宠物的
+  `render.layer` 并 `apply_props`；`overlay` 同时绕过全屏自动隐藏
+  （`hidden_by_fullscreen` 只隐藏非 overlay 且未显式豁免的宠物）。
 - **位置模型**（`petweave-core::placement`）：layer surface 不回报位置，所以
   `PetSurface` 镜像 `anchor + margins`，用 `placement::surface_position()` 反算 rect
   （物理边界、拖拽起点、日志/诊断都用它）；`Anchor::parse` / `absolute_anchor` 等纯函数可单测。
@@ -393,8 +398,14 @@ StatusNotifierWatcher（如 niri 无托盘守护）时保持等待而不是让�
 - 白名单环境：把安全的 base 函数（`print/tostring/pcall/...`）与上述库复制进自定义 `env`。
 - **指令预算钩子**：每 1000 条指令检查一次，超过 200 万条 `abort`，防死循环拖垮宿主。
 - 错误吞掉：脚本回调出错只 `warn`，不致命。
-- 事件回调：`init/on_key/on_tick/on_system/on_fullscreen/on_pointer`。
-- 暴露 API：`pet.play/animations/current/speak`、`sys.cpu/mem/focus`。
+- 事件回调：`init/on_key/on_tick/on_system/on_fullscreen/on_pointer/on_scroll`。
+- 暴露 API：`pet.play/animations/current/speak/held/size/w/h/offset`、`sys.cpu/mem/focus`。
+  `pet.offset(dx, dy)` 以屏幕坐标（y 向下）精确位移图片，余量由 `pet.padding` 预留。
+- 脚本声明（文件顶层全局）：`OWN_KEYS` 让脚本独占按键（精灵退化为纯画布，不再按
+  `key_mode`/`reactions` 映射）；`OWN_PIXELS` 保留声明式按键但允许 `pet.size` 精确摆放。
+  两者都让 `on_tick` 先于精灵 tick 执行（同一帧内生效），且脚本动画期间由
+  `next_deadline` 按 16ms 步进、静止时返回 `None`（保持空闲 ~0% CPU）。
+- `--preview`：对声明了上述标志的宠物先跑一次 `on_tick`（`Runtime::tick_settle`）再截图。
 - 气泡：白底黑边矩形 + `ab_glyph` 渲染系统 sans 字体文本，默认显示 4 秒，
   过期通过 `next_deadline` 触发一次重绘。
 
@@ -424,13 +435,22 @@ StatusNotifierWatcher（如 niri 无托盘守护）时保持等待而不是让�
 
 ```toml
 [meta]      # name / version / author / license / description
-[pet]       # kind = "sprite" | "lua"; surface_width/height; script
+[pet]       # kind = "sprite" | "lua"; surface_width/height（盒子）; script;
+            # key_mode / alternate / force_alternation / padding
+            # （下划线与连字符等价）
 [animations.idle]   # sheet / cell_width / cell_height / frames / fps / loop
 [reactions] # idle / key-left / key-right / key-both / click → 动画 id
+[[reactions]]       # 逐键反应 keys = [...] + animation = "..."（或具名字段）
 ```
 
 `sprite` 运行时把精灵表按 `cell_width × cell_height` 网格切帧（row-major），
 按 `fps` 播放、按 `loop` 决定循环或停在末帧，事件命中 `reactions` 时播放一次性反应动画。
+
+摆放只有一条规则：图片等比缩放进表面盒子、**贴左下角**绘制，再叠加 `pet.offset(dx, dy)`
+（y 向下）。`pet.padding` 在四周预留余量，供包脚本做上跳/抖动；宿主不再内置弹跳。
+尺寸优先级（Q1A）：显式 `[[pets]].width/height` > 宠物 `preferred_size()` > `[render]`；
+只写一边时另一边按原图比例推算，两边都写则内容等比缩放（`scale_to_fit`，永不拉伸）。
+`Runtime::fit_frames` / `tick_all` 在尺寸变化后同步渲染帧与图片。
 
 ---
 

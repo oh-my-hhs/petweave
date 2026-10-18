@@ -219,10 +219,14 @@ click_through = false
 1. `[render]` = 全局默认值；`[[pets]]` 的每个字段都是 `Option<T>`，`None` 时继承默认值。
 2. 字段名与 `[render]` **同名同义**：`width/height/layer/anchor/margin_*/output/disable_fullscreen_hide/click_through`。
 3. 移动模式：`[[pets]].mode`（新键）优先；未写时用 `[render].mode`；`[render].mode` 为空时回退旧 `[render].physics` 布尔（保持与现状 `MoveMode` 解析一致）。为兼容，`[[pets]].move_mode` 作为 `mode` 的别名接受，写回时统一写 `mode`。
-4. 尺寸（v0.2 按实现修订）：**宠物 `preferred_size()` 优先**（现状即如此，BongoCat 由 `cat_height` 决定），
-   其次 `[[pets]].width/height`，再次 `[render]` 默认值；`0` 或缺省 = 继承下一级。
-   实现见 `petweave_core::pet::resolve_surface_size` / `Pet::surface_size`（GUI 的表单若要覆盖
-   宠物固有尺寸，需在 G1 起通过控制协议的 `RenderPet` 尺寸或新增"强制尺寸"键解决，见 Q9）。
+4. 尺寸（v0.3 定案，Q1A/Q2A/Q9）：**显式 `[[pets]].width/height` 优先**，其次宠物
+   `preferred_size()`，再次 `[render]` 默认值；`0` 或缺省 = 继承下一级。
+   - 只写一边时，另一边按宠物原图比例推算（`scaled_for`）；两边都写时宠物内容按比例缩放进盒子
+     （`scale_to_fit`），**永不拉伸变形**。
+   - 实现：`petweave_core::pet::resolve_surface_size` / `scaled_for` / `scale_to_fit`，
+     `Pet::surface_size` + `Pet::resize_to`。GUI 改尺寸 = 改这两个键，宿主热重载后
+     `Runtime::fit_frames` / `tick_all` 会把渲染帧与图片一起缩放。
+   - 运行时即时反馈走控制通道 `SetSize`（§6.3），不写盘。
 5. `id`：写配置时可选；缺省按 `"{kind}-{序号}"` 生成并回填到内存（`petweave config migrate` 会补写）。
 6. `enabled = false` 的宠物不建 surface，但保留在配置里（GUI 里是"已停用"分组）。
 
@@ -289,10 +293,11 @@ click_through = false
 | op | 请求字段 | 响应 `data` | 触发主循环动作 |
 |---|---|---|---|
 | `Hello` | `protocol`, `client` | `server`, `protocol`, `pid`, `caps` | — |
-| `ListPets` | — | `[{id,name,kind,package,enabled,visible,size,rect,output,layer,mode,error?}]` | 读快照 |
+| `ListPets` | — | `[{id,name,kind,package,enabled,visible,size,rect,preferred_size,natural_size,size_owner,output,layer,mode,error?}]` | 读快照（`size_owner` = `config`/`pet`/`script`，GUI 据此提示"尺寸由宠物决定"） |
 | `ListOutputs` | — | `[{name,x,y,w,h,scale}]` | 读 `xdg-output` 快照 |
 | `Reload` | 可选 `pets`（内联补丁：拖动参数滑杆时的即时预览，不写盘） | `{reloaded, added, removed}` | `HostCommand::ReloadConfig` 或原地 patch |
 | `SetPlacement` | `pet`, `anchor`, `margins[4]` | `{rect}` | 立即改 margin/anchor |
+| `SetSize` | `pet`, `width`, `height`（0 = 按原图比例推算另一边） | `{rect}` | 缩放 surface + 内容（等比），供画布拉伸/滑杆即时反馈 |
 | `SetVisible` | 可选 `pet`（缺省=全部）, `visible` | `{}` | 显隐 |
 | `SetMoveMode` | 可选 `pet`, `mode` | `{}` | `set_move_mode` |
 | `SetPaused` | `paused` | `{}` | 暂停 tick（省电/调试） |
@@ -567,7 +572,10 @@ crates/petweave-settings/
 | Q6 | `RenderPet` 兜底接口是否保留？GUI 能本地加载所有内置 kind 时可能多余 | 保留但可延后实现 | G2 决定 |
 | Q7 | 是否需要 GUI 常驻托盘（关闭窗口后后台）？ | 倾向不需要（宿主已有托盘） | 用户反馈 |
 | Q8 | 诊断页的"一键修复"（`doctor --apply`）是否允许在 GUI 内提权？ | 倾向只显示命令 + 复制按钮 | 安全评审 |
-| Q9 | 是否允许 GUI 用 `width/height` **强制覆盖**宠物固有尺寸（如把 BongoCat 拉宽变形）？ | 当前固有尺寸优先（§5.2 第 4 条）；需要时建议新增显式键而不是改变优先级 | G2 前确定 |
+| Q9 | 是否允许 GUI 用 `width/height` **强制覆盖**宠物固有尺寸？ | **已定（Q1A/Q2A）：允许，且只等比缩放不拉伸。** 显式配置 > 宠物固有尺寸 > `[render]`；只写一边时另一边按比例推算。落地：§5.2 第 4 条、`resolve_surface_size`/`scale_to_fit`、控制通道 `SetSize` | ✅ 已实现 |
+| Q10 | 配置层是否暴露绝对坐标 `position{x,y}`？ | **已定（Q4A）：不暴露。** anchor 是 layer-shell 协议的必然实现细节，GUI 只对用户暴露"x/y + 对齐方式"，内部用 `placement::fitted` 翻译成 anchor+margin；配置文件继续用 `anchor/margin_*`（零破坏） | ✅ 已定 |
+| Q12 | 渲染层级能否在 GUI/托盘切换？ | **已定：托盘已支持 Top / Overlay**（`overlay` 全屏时仍显示）。G2 面板的 F12「layer」下拉沿用同一语义，两处状态通过 `SetLayer` 保持一致 | ✅ 托盘已实现 |
+| Q11 | 抖动/弹跳归谁？ | **已定（Q5A）：归包脚本。** 宿主删除 `bob_pixels`/`anchor_*`，只保留 `pet.offset(dx,dy)`（y 向下）+ `pet.padding` 余量 | ✅ 已实现 |
 
 ---
 

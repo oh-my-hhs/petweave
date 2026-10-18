@@ -264,9 +264,9 @@ margin_right = 0
 margin_bottom = 16
 margin_left = 0
 output = ""                    # 绑定指定显示器（xdg-output 名称），空=自动
-disable_fullscreen_hide = false  # 全屏时也保持可见
+disable_fullscreen_hide = false  # 全屏时也保持可见（layer = "overlay" 同样有效）
 click_through = true           # 仅宠物不透明区域可点击（其余穿透）
-mode = "physics"               # physics | drag | fixed（旧 physics = true/false 仍兼容）
+mode = "drag"                  # physics | drag | fixed（默认 drag；旧 physics = true/false 仍兼容）
 
 # 每只宠物一个 [[pets]] 块（最多 12 只）。placement 键与 [render] 同名同义，写了就覆盖。
 [[pets]]
@@ -287,7 +287,7 @@ margin_left = 0
 output = ""
 disable_fullscreen_hide = false
 click_through = true
-mode = "physics"               # 也可写旧别名 move_mode（不可与 mode 冲突）
+mode = "drag"                  # 也可写旧别名 move_mode（不可与 mode 冲突）
 
 [pets.bongo]                   # 仅 kind = "bongo" 时生效
 assets_dir = "assets/bongocat" # 素材目录（PNG 帧 + bongo-sleeping.svg）
@@ -349,6 +349,7 @@ crates/
   petweave/        主机：cli / app(事件循环) / package / platform / graphics / runtime
 assets/bongocat/   内置 BongoCat 素材（PNG 帧 + sleeping SVG，MIT，署名见目录内 README）
 packages/          预置角色包：bongo-sprite（声明式 BongoCat）/ blinky（网格示例）/ lua-demo（Lua 示例）
+                   / krill-pet、puro-pet（原图直用的按键桌宠：交替姿势 + 1/2/3 表情 + 上跳）
 docs/              技术栈分析 + 实现计划 + 图形界面计划 + 角色包教程 + Live2D 路线 + 社区列表 + 配图
 petweave.toml.example
 ```

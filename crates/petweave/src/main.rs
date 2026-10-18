@@ -3,8 +3,9 @@
 //! The host is a thin CLI around the `petweave` library crate
 //! (`src/lib.rs`), which the settings GUI reuses for previews.
 
-use std::io::Write;
-use std::path::Path;
+use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
@@ -36,6 +37,9 @@ fn main() -> Result<()> {
             return Ok(());
         }
         Some(Command::Config { cmd }) => return run_config_command(cmd),
+        Some(Command::Control { json, socket }) => {
+            return run_control_client(json.as_deref(), socket.clone())
+        }
         Some(_) => return run_package_command(&cli.command, &cli),
         None => {}
     }
@@ -212,6 +216,76 @@ fn set_private_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("cannot set permissions on {}", path.display()))
+}
+
+// --- control client --------------------------------------------------------
+
+/// `petweave control '<json>'`: one JSON Lines round trip with the host.
+///
+/// Debug/verification helper for the GUI control channel
+/// (`docs/GUI_ROADMAP.md` §6): prints the response, skips pushed events.
+fn run_control_client(request: Option<&str>, socket: Option<PathBuf>) -> Result<()> {
+    let line = match request {
+        Some(json) if json != "-" => json.trim().to_string(),
+        _ => {
+            if std::io::stdin().is_terminal() {
+                // Convenience default: listing pets is the common first call.
+                r#"{"id":1,"op":"ListPets"}"#.to_string()
+            } else {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .context("cannot read the request from stdin")?;
+                buf.trim().to_string()
+            }
+        }
+    };
+    if line.is_empty() {
+        bail!("empty request (expected a JSON object such as {{\"id\":1,\"op\":\"ListPets\"}})");
+    }
+    // Fail locally on malformed JSON so the message names this side.
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&line) {
+        bail!("request is not valid JSON: {e}");
+    }
+
+    let socket = socket
+        .or_else(petweave::platform::control::socket_path)
+        .context("no control socket: $XDG_RUNTIME_DIR is unset and --socket was not given")?;
+    let mut stream = UnixStream::connect(&socket).with_context(|| {
+        format!(
+            "cannot connect to {} — is petweave running?",
+            socket.display()
+        )
+    })?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+    writeln!(stream, "{line}").with_context(|| format!("cannot write to {}", socket.display()))?;
+
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut response = String::new();
+        if reader
+            .read_line(&mut response)
+            .context("cannot read the control response")?
+            == 0
+        {
+            bail!(
+                "control socket closed before a response (host exited?) — {}",
+                socket.display()
+            );
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) else {
+            continue; // ignore framing noise
+        };
+        if value.get("event").is_some() {
+            continue; // unsolicited host event, not the answer to this request
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 }
 
 // --- package subcommands ----------------------------------------------------

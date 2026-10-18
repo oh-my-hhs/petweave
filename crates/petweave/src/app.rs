@@ -20,9 +20,12 @@ use anyhow::{Context, Result};
 use calloop::channel::Channel;
 use calloop::EventLoop;
 use calloop_wayland_source::WaylandSource;
+use serde_json::{json, Value};
 
-use petweave_core::config::{MoveMode, RenderConfig};
-use petweave_core::placement::Rect;
+use petweave_core::config::{
+    MoveMode, PetInstance, RenderConfig, MAX_MARGIN_ABS, MAX_SURFACE_SIZE,
+};
+use petweave_core::placement::{self, Rect};
 use petweave_core::render::Frame;
 use petweave_core::{Config, Event};
 
@@ -37,6 +40,10 @@ use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 
 use crate::cli::Cli;
 use crate::platform::config_watcher::ConfigWatcher;
+use crate::platform::control::{
+    self, ControlCall, ControlError, ControlEvent, ControlHandle, Op, OutputInfo, PetInfo,
+    PetPatch, Response,
+};
 use crate::platform::fullscreen::{FullscreenHandler, FullscreenTracker};
 use crate::platform::input::InputReader;
 use crate::platform::system::SystemSampler;
@@ -60,6 +67,11 @@ pub enum HostCommand {
     /// Switch the layer-shell layer of every pet (tray 渲染层级 menu).
     /// `overlay` keeps the pet above fullscreen windows.
     SetLayer(String),
+    /// A request from the settings GUI's control channel (G1).
+    ///
+    /// It is applied here, on the main thread, and answered through the
+    /// call's outbox; the listener/reader threads never touch pet state.
+    Control(ControlCall),
     /// Quit the host (tray menu).
     Quit,
 }
@@ -87,6 +99,9 @@ struct Physics {
     /// Settled on the floor (no more movement).
     resting: bool,
 }
+
+/// `Status` broadcast interval while at least one control client is connected.
+const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 const GRAVITY: f64 = 1400.0;
 const BOUNCE: f64 = 0.45;
@@ -243,9 +258,20 @@ pub struct App {
     pub tray_shared: Option<std::sync::Arc<std::sync::Mutex<TrayShared>>>,
     /// Tray service handle (kept alive; refreshed on visibility/mode changes).
     pub tray_handle: Option<ksni::blocking::Handle<PetTray>>,
+    /// Control channel handle (`docs/GUI_ROADMAP.md` G1), None when disabled.
+    pub control: Option<ControlHandle>,
+    /// Pet animation/physics ticking paused through the control channel.
+    pub paused: bool,
     pub pointer: Option<wl_pointer::WlPointer>,
     /// Timestamp of the previous loop iteration (physics dt).
     last_loop: Instant,
+    /// When a control `Quit` should terminate the loop (gives the response a
+    /// moment to be flushed to the client).
+    exit_at: Option<Instant>,
+    /// Last `Status` event broadcast (5s interval).
+    last_status: Instant,
+    /// Last `PetMoved` broadcast (throttles 16ms physics steps to ~20Hz).
+    last_moved: Instant,
     /// Set when a redraw is wanted (input events, layer configure, …).
     pub needs_redraw: bool,
     /// Set by SIGINT/SIGTERM to break the loop.
@@ -550,13 +576,18 @@ impl App {
         }
         self.bind_named_outputs();
         self.needs_redraw = true;
+        // Control clients (settings GUI) keep their list/canvas in sync.
+        self.broadcast_pets_changed();
         outcome
     }
 
     /// Hot reload: re-read + re-validate the config file and apply changes.
-    pub fn reload_config(&mut self) {
+    ///
+    /// Returns the applied diff so the control channel can answer `Reload`;
+    /// failures keep the old config and are logged here (never fatal).
+    pub fn reload_config(&mut self) -> std::result::Result<ReloadOutcome, String> {
         let Some(path) = &self.config_path else {
-            return;
+            return Err("no config file to reload (the host is running defaults)".to_string());
         };
         let mut cfg = match Config::load_with_warnings(Some(path)) {
             Ok((c, unknown)) => {
@@ -566,15 +597,17 @@ impl App {
                 c
             }
             Err(e) => {
-                tracing::error!("config reload failed (keeping old config): {e}");
-                return;
+                let message = format!("config reload failed (keeping old config): {e}");
+                tracing::error!("{message}");
+                return Err(message);
             }
         };
         if let Err(e) = crate::apply_cli_overrides(&mut cfg, &self.cli) {
-            tracing::error!("config reload failed (keeping old config): {e}");
-            return;
+            let message = format!("config reload failed (keeping old config): {e}");
+            tracing::error!("{message}");
+            return Err(message);
         }
-        let _ = self.apply_config(cfg, true);
+        Ok(self.apply_config(cfg, true))
     }
 
     // --- visibility / mode ----------------------------------------------
@@ -591,6 +624,7 @@ impl App {
         self.sync_tray();
         tracing::info!("pets visibility: {}", if show { "shown" } else { "hidden" });
         self.needs_redraw = true;
+        self.broadcast_pets_changed();
     }
 
     /// Toggle one pet's visibility.
@@ -609,6 +643,7 @@ impl App {
         );
         self.sync_tray();
         self.needs_redraw = true;
+        self.broadcast_pets_changed();
     }
 
     /// Switch the movement mode of every pet (tray "移动模式" radio).
@@ -633,6 +668,7 @@ impl App {
         }
         self.sync_tray();
         self.needs_redraw = true;
+        self.broadcast_pets_changed();
     }
 
     /// Switch the movement mode of one pet.
@@ -651,6 +687,7 @@ impl App {
         }
         self.sync_tray();
         self.needs_redraw = true;
+        self.broadcast_pets_changed();
     }
 
     /// Switch the layer-shell layer of every pet (tray "渲染层级").
@@ -687,6 +724,7 @@ impl App {
         }
         self.sync_tray();
         self.needs_redraw = true;
+        self.broadcast_pets_changed();
     }
 
     /// Let `id` fall from where it currently is (enter physics mode).
@@ -850,6 +888,11 @@ impl App {
             let Some(p) = &mut pet.motion.physics else {
                 continue;
             };
+            if p.resting {
+                // Settled: leave the final position alone. Re-queueing it on
+                // every wakeup would emit spurious `PetMoved` events.
+                continue;
+            }
             let Some((out_w, out_h)) = self
                 .wayland
                 .output_logical_size_for(pet.surface.bound_output.as_ref())
@@ -871,18 +914,467 @@ impl App {
     }
 
     /// Apply the pending drag/physics position of every pet to its surface.
-    fn apply_positions(&mut self) {
+    ///
+    /// Returns the pets that moved with their new rect, so the control
+    /// channel can mirror drags/physics into the GUI canvas.
+    fn apply_positions(&mut self) -> Vec<(String, [i32; 4])> {
+        let mut moved = Vec::new();
         for pet in self.pets.iter_mut() {
             if let Some((x, y)) = pet.motion.pending_position.take() {
                 pet.surface.set_position_absolute(x, y);
+                let rect = pet.surface.rect(&self.wayland);
+                moved.push((pet.id.clone(), rect_i32(rect)));
             }
         }
+        moved
     }
 
     /// Earliest instant some pet physics needs a step.
     fn physics_deadline(&self) -> Option<Instant> {
         let stepping = self.pets.iter().any(|p| p.motion.is_moving());
         stepping.then(|| Instant::now() + std::time::Duration::from_millis(16))
+    }
+
+    // --- control channel (G1) -------------------------------------------
+
+    /// Apply one control request on the main thread and answer the client.
+    ///
+    /// Everything here runs inside the calloop thread: the socket threads
+    /// only parsed the line and handed it over (`HostCommand::Control`).
+    fn handle_control(&mut self, call: ControlCall) {
+        let id = call.id;
+        let outbox = call.out.clone();
+        let result = match call.op {
+            Op::Hello { protocol, client } => self.control_hello(protocol, client.as_deref()),
+            Op::ListPets => Ok(serde_json::to_value(self.pet_infos()).unwrap_or(Value::Null)),
+            Op::ListOutputs => Ok(serde_json::to_value(self.output_infos()).unwrap_or(Value::Null)),
+            Op::Reload { pets } => self.control_reload(pets),
+            Op::SetPlacement {
+                pet,
+                anchor,
+                margins,
+            } => self.control_set_placement(&pet, &anchor, margins),
+            Op::SetSize {
+                pet,
+                width,
+                height,
+            } => self.control_set_size(&pet, width, height),
+            Op::SetVisible { pet, visible } => self.control_set_visible(pet.as_deref(), visible),
+            Op::SetMoveMode { pet, mode } => self.control_set_move_mode(pet.as_deref(), &mode),
+            Op::SetPaused { paused } => self.control_set_paused(paused),
+            Op::RenderPet { .. } => Err(ControlError::new(
+                "unsupported",
+                "RenderPet is not implemented yet (G2/G3): the settings GUI renders \
+                 previews with petweave's runtime instead",
+            )),
+            Op::Quit => self.control_quit(),
+        };
+        match result {
+            Ok(data) => outbox.respond(&Response::ok(id, data)),
+            Err(e) => outbox.respond(&Response::err(id, e.code, e.message)),
+        }
+    }
+
+    fn control_hello(
+        &self,
+        protocol: u32,
+        client: Option<&str>,
+    ) -> Result<Value, ControlError> {
+        control::check_protocol(protocol)?;
+        if let Some(client) = client {
+            tracing::info!("control: hello from {client:?}");
+        }
+        Ok(json!({
+            "server": "petweave",
+            "protocol": control::PROTOCOL,
+            "pid": std::process::id(),
+            "caps": {
+                "protocol": control::PROTOCOL,
+                "placement": true,
+                "size": true,
+                "events": true,
+                "reload_patch": true,
+                // G2/G3: the GUI renders previews locally (D7), so the
+                // host-side fallback RenderPet op is not available yet.
+                "preview": false,
+            },
+        }))
+    }
+
+    /// `Reload`: from disk, or an in-memory patch (never written: D10).
+    fn control_reload(
+        &mut self,
+        patch: Option<Vec<PetPatch>>,
+    ) -> Result<Value, ControlError> {
+        let outcome = match patch {
+            None => self
+                .reload_config()
+                .map_err(|e| ControlError::new("reload_failed", e))?,
+            Some(patches) => {
+                let mut cfg = self.config.clone();
+                let resolved = cfg.resolve_pets();
+                for patch in &patches {
+                    let index = resolved
+                        .iter()
+                        .find(|rp| rp.id == patch.id)
+                        .map(|rp| rp.index)
+                        .ok_or_else(|| ControlError::pet_not_found(&patch.id))?;
+                    apply_pet_patch(&mut cfg.pets[index], patch);
+                }
+                if let Err(e) = cfg.validate() {
+                    return Err(ControlError::invalid(format!(
+                        "patched config is invalid: {e}"
+                    )));
+                }
+                self.apply_config(cfg, false)
+            }
+        };
+        Ok(json!({
+            "reloaded": true,
+            "added": outcome.added,
+            "removed": outcome.removed,
+            "recreated": outcome.recreated,
+            "updated": outcome.updated,
+            "resized": outcome.resized,
+        }))
+    }
+
+    /// `SetPlacement`: runtime-only anchor/margins change (the GUI persists
+    /// it by writing the config itself, D10).
+    fn control_set_placement(
+        &mut self,
+        id: &str,
+        anchor: &str,
+        margins: [i32; 4],
+    ) -> Result<Value, ControlError> {
+        placement::Anchor::parse(anchor).map_err(ControlError::invalid)?;
+        if margins.iter().any(|m| m.abs() > MAX_MARGIN_ABS) {
+            return Err(ControlError::invalid(format!(
+                "margins must be within ±{MAX_MARGIN_ABS} logical pixels"
+            )));
+        }
+        let Some(pos) = self.pets.iter().position(|p| p.id == id) else {
+            return Err(ControlError::pet_not_found(id));
+        };
+        {
+            let pet = &mut self.pets[pos];
+            // Free positioning (drag/physics) is replaced by the explicit
+            // placement: cancel it so the next physics step cannot fight it.
+            pet.motion.cancel();
+            pet.render.anchor = anchor.to_string();
+            pet.render.margin_top = margins[0];
+            pet.render.margin_right = margins[1];
+            pet.render.margin_bottom = margins[2];
+            pet.render.margin_left = margins[3];
+            if let Err(e) = pet.surface.apply_props(&pet.render) {
+                return Err(ControlError::internal(format!(
+                    "cannot apply placement: {e:#}"
+                )));
+            }
+        }
+        self.sync_tray();
+        self.needs_redraw = true;
+        let rect = rect_i32(self.pets[pos].rect(&self.wayland));
+        self.broadcast_pets_changed();
+        Ok(json!({ "rect": rect }))
+    }
+
+    /// `SetSize`: runtime-only resize, scaled proportionally into the box.
+    fn control_set_size(
+        &mut self,
+        id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Value, ControlError> {
+        if width == 0 && height == 0 {
+            return Err(ControlError::invalid(
+                "width and height are both 0 — give at least one side",
+            ));
+        }
+        if width > MAX_SURFACE_SIZE || height > MAX_SURFACE_SIZE {
+            return Err(ControlError::invalid(format!(
+                "width/height must be ≤ {MAX_SURFACE_SIZE}"
+            )));
+        }
+        if self.pet(id).is_none() {
+            return Err(ControlError::pet_not_found(id));
+        }
+        // 0 means "derive from the artwork aspect ratio" (G0/Q2A).
+        let w = (width > 0).then_some(width);
+        let h = (height > 0).then_some(height);
+        let Some((w, h)) = self.runtime.set_box(id, w, h) else {
+            return Err(ControlError::pet_not_found(id));
+        };
+        {
+            let Some(pet) = self.pet_mut(id) else {
+                return Err(ControlError::pet_not_found(id));
+            };
+            pet.motion.cancel();
+            pet.render.width = w;
+            pet.render.height = h;
+            let render = pet.render.clone();
+            if let Err(e) = pet.surface.apply_props(&render) {
+                return Err(ControlError::internal(format!(
+                    "cannot resize surface: {e:#}"
+                )));
+            }
+        }
+        self.needs_redraw = true;
+        let rect = match self.pet(id) {
+            Some(pet) => rect_i32(pet.rect(&self.wayland)),
+            None => [0, 0, w as i32, h as i32],
+        };
+        self.broadcast_pets_changed();
+        Ok(json!({ "size": [w, h], "rect": rect }))
+    }
+
+    fn control_set_visible(
+        &mut self,
+        pet: Option<&str>,
+        visible: bool,
+    ) -> Result<Value, ControlError> {
+        match pet {
+            Some(id) => {
+                let Some(running) = self.pet_mut(id) else {
+                    return Err(ControlError::pet_not_found(id));
+                };
+                running.visible = visible;
+                if !visible {
+                    running.motion.cancel();
+                }
+                tracing::info!(
+                    "pet {id:?} visibility: {}",
+                    if visible { "shown" } else { "hidden" }
+                );
+            }
+            None => {
+                for running in self.pets.iter_mut() {
+                    running.visible = visible;
+                    if !visible {
+                        running.motion.cancel();
+                    }
+                }
+                tracing::info!(
+                    "pets visibility: {}",
+                    if visible { "shown" } else { "hidden" }
+                );
+            }
+        }
+        self.sync_tray();
+        self.needs_redraw = true;
+        self.broadcast_pets_changed();
+        Ok(json!({}))
+    }
+
+    fn control_set_move_mode(
+        &mut self,
+        pet: Option<&str>,
+        mode: &str,
+    ) -> Result<Value, ControlError> {
+        let parsed = MoveMode::parse(mode).ok_or_else(|| {
+            ControlError::invalid(format!(
+                "unknown mode {mode:?} (expected one of \"drag\", \"physics\", \"fixed\")"
+            ))
+        })?;
+        match pet {
+            Some(id) => {
+                if self.pet(id).is_none() {
+                    return Err(ControlError::pet_not_found(id));
+                }
+                self.set_pet_move_mode(id, parsed);
+            }
+            None => self.set_move_mode(parsed),
+        }
+        Ok(json!({}))
+    }
+
+    fn control_set_paused(&mut self, paused: bool) -> Result<Value, ControlError> {
+        self.paused = paused;
+        if paused {
+            // Freeze drag/physics too: resuming must not apply a stale step.
+            for pet in self.pets.iter_mut() {
+                pet.motion.cancel();
+            }
+        }
+        tracing::info!(
+            "control: pet ticking {}",
+            if paused { "paused" } else { "resumed" }
+        );
+        Ok(json!({ "paused": paused }))
+    }
+
+    fn control_quit(&mut self) -> Result<Value, ControlError> {
+        tracing::info!("quit requested from control channel");
+        // Give the per-client writer thread a moment to flush this response
+        // before the process exits; the loop wakes at `exit_at`.
+        self.exit_at = Some(Instant::now() + std::time::Duration::from_millis(100));
+        Ok(json!({ "bye": true }))
+    }
+
+    /// Every configured pet (running or not) as the control protocol sees it.
+    pub fn pet_infos(&self) -> Vec<PetInfo> {
+        let mut infos = Vec::new();
+        for rp in self.config.resolve_pets() {
+            let slot = self.runtime.slots().iter().find(|s| s.id() == rp.id);
+            let running = self.pet(&rp.id);
+            let preferred = slot.and_then(|s| s.instance.preferred_size());
+            // Size ownership follows the *runtime* instance (a SetSize call
+            // patches the slot, not the file).
+            let instance = slot.map(|s| &s.pet.instance).unwrap_or(&rp.instance);
+            let (size, rect, visible) = match running {
+                Some(pet) => (
+                    (pet.surface.width, pet.surface.height),
+                    rect_i32(pet.rect(&self.wayland)),
+                    pet.visible,
+                ),
+                None => {
+                    let (w, h) = slot
+                        .map(|s| s.surface_size())
+                        .unwrap_or((rp.placement.width, rp.placement.height));
+                    let anchor = placement::Anchor::parse(&rp.placement.anchor)
+                        .unwrap_or(placement::Anchor::BOTTOM);
+                    let output = if rp.placement.output.is_empty() {
+                        None
+                    } else {
+                        self.wayland.find_output_named(&rp.placement.output)
+                    };
+                    let (ow, oh) = self
+                        .wayland
+                        .output_logical_size_for(output.as_ref())
+                        .unwrap_or((1920.0, 1080.0));
+                    let rect = placement::surface_position(
+                        anchor,
+                        (
+                            rp.placement.margin_top,
+                            rp.placement.margin_right,
+                            rp.placement.margin_bottom,
+                            rp.placement.margin_left,
+                        ),
+                        w as f64,
+                        h as f64,
+                        placement::OutputSize::new(ow, oh),
+                    );
+                    ((w, h), rect_i32(rect), false)
+                }
+            };
+            let explicit =
+                instance.width.is_some_and(|v| v > 0) || instance.height.is_some_and(|v| v > 0);
+            let size_owner = if explicit {
+                "config"
+            } else if preferred.is_some() {
+                "pet"
+            } else if instance.kind == "lua" {
+                "script"
+            } else {
+                "default"
+            };
+            let layer = running
+                .map(|p| p.render.layer.clone())
+                .unwrap_or_else(|| rp.placement.layer.clone());
+            let mode = running
+                .map(|p| p.move_mode.as_str().to_string())
+                .unwrap_or_else(|| rp.placement.mode.as_str().to_string());
+            let error = self
+                .runtime
+                .load_errors()
+                .iter()
+                .find(|(id, _)| id == &rp.id)
+                .map(|(_, error)| error.clone());
+            infos.push(PetInfo {
+                id: rp.id.clone(),
+                name: rp.name.clone(),
+                kind: rp.instance.kind.clone(),
+                package: rp.instance.package.clone(),
+                enabled: rp.instance.enabled,
+                visible,
+                size: [size.0, size.1],
+                rect,
+                preferred_size: preferred.map(|(w, h)| [w, h]),
+                natural_size: preferred.map(|(w, h)| [w, h]),
+                size_owner: size_owner.to_string(),
+                output: rp.placement.output.clone(),
+                layer,
+                mode,
+                error,
+            });
+        }
+        infos
+    }
+
+    fn output_infos(&self) -> Vec<OutputInfo> {
+        self.wayland
+            .output_state
+            .outputs()
+            .filter_map(|output| {
+                let info = self.wayland.output_state.info(&output)?;
+                let scale = info.scale_factor.max(1);
+                let (w, h) = info.logical_size.unwrap_or((
+                    info.physical_size.0 / scale,
+                    info.physical_size.1 / scale,
+                ));
+                let (x, y) = info.logical_position.unwrap_or((0, 0));
+                Some(OutputInfo {
+                    name: info.name.clone().unwrap_or_else(|| "<unnamed>".to_string()),
+                    x,
+                    y,
+                    w,
+                    h,
+                    scale,
+                })
+            })
+            .collect()
+    }
+
+    fn broadcast_pets_changed(&self) {
+        let Some(control) = &self.control else {
+            return;
+        };
+        control.broadcast(&ControlEvent::PetsChanged {
+            pets: self.pet_infos(),
+        });
+    }
+
+    /// Mirror drag/physics movement to control clients (~20Hz while moving,
+    /// plus one final event once every pet has settled).
+    fn notify_moved(&mut self, moved: Vec<(String, [i32; 4])>) {
+        if moved.is_empty() || self.control.is_none() {
+            return;
+        }
+        let settled = !self.pets.iter().any(|p| p.motion.is_moving());
+        if !settled && self.last_moved.elapsed() < std::time::Duration::from_millis(50) {
+            return;
+        }
+        self.last_moved = Instant::now();
+        if let Some(control) = &self.control {
+            for (pet, rect) in moved {
+                control.broadcast(&ControlEvent::PetMoved { pet, rect });
+            }
+        }
+    }
+
+    /// When the next `Status` event is due, if any control client is
+    /// connected. No client = no wakeup (the idle loop stays blocked).
+    fn status_deadline(&self) -> Option<Instant> {
+        let control = self.control.as_ref()?;
+        if control.client_count() == 0 {
+            return None;
+        }
+        Some(self.last_status + STATUS_INTERVAL)
+    }
+
+    /// Periodic `Status` event (diagnostics page, 5s interval).
+    fn maybe_broadcast_status(&mut self) {
+        if self.control.is_none() || self.last_status.elapsed() < STATUS_INTERVAL {
+            return;
+        }
+        self.last_status = Instant::now();
+        if let Some(control) = &self.control {
+            control.broadcast(&ControlEvent::Status {
+                fps: self.config.general.fps,
+                rss_kb: control::rss_kb(),
+                pets: self.pets.len(),
+            });
+        }
     }
 
     /// One string per running pet (startup log / diagnostics).
@@ -904,6 +1396,59 @@ impl App {
                 )
             })
             .collect()
+    }
+}
+
+/// Placement rectangle → the control protocol's `[x, y, w, h]` (logical px).
+fn rect_i32(rect: Rect) -> [i32; 4] {
+    [
+        rect.x.round() as i32,
+        rect.y.round() as i32,
+        rect.width.round() as i32,
+        rect.height.round() as i32,
+    ]
+}
+
+/// Apply one [`PetPatch`] to a config entry (`Reload` with an inline patch).
+///
+/// Pure and unit-tested: the host never writes the result to disk (D10);
+/// the GUI owns persistence.
+fn apply_pet_patch(instance: &mut PetInstance, patch: &PetPatch) {
+    if let Some(width) = patch.width {
+        instance.width = Some(width);
+    }
+    if let Some(height) = patch.height {
+        instance.height = Some(height);
+    }
+    if let Some(anchor) = &patch.anchor {
+        instance.anchor = Some(anchor.clone());
+    }
+    if let Some([top, right, bottom, left]) = patch.margins {
+        instance.margin_top = Some(top);
+        instance.margin_right = Some(right);
+        instance.margin_bottom = Some(bottom);
+        instance.margin_left = Some(left);
+    }
+    if let Some(layer) = &patch.layer {
+        instance.layer = Some(layer.clone());
+    }
+    if let Some(mode) = &patch.mode {
+        // `mode` is the canonical key; clear the alias so validation cannot
+        // see a conflicting pair.
+        instance.mode = Some(mode.clone());
+        instance.move_mode = None;
+    }
+    if let Some(output) = &patch.output {
+        instance.output = Some(output.clone());
+    }
+    if let Some(click_through) = patch.click_through {
+        instance.click_through = Some(click_through);
+    }
+    if let Some(disable) = patch.disable_fullscreen_hide {
+        instance.disable_fullscreen_hide = Some(disable);
+    }
+    if let Some(enabled) = patch.enabled {
+        instance.enabled = enabled;
     }
 }
 
@@ -1005,8 +1550,13 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         fullscreen: FullscreenTracker::new(),
         tray_shared: None,
         tray_handle: None,
+        control: None,
+        paused: false,
         pointer: None,
         last_loop: Instant::now(),
+        exit_at: None,
+        last_status: Instant::now(),
+        last_moved: Instant::now(),
         needs_redraw: false,
         exit: false,
     };
@@ -1069,12 +1619,16 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         .insert_source(host_rx, |event, _, app| {
             if let calloop::channel::Event::Msg(cmd) = event {
                 match cmd {
-                    HostCommand::ReloadConfig => app.reload_config(),
+                    HostCommand::ReloadConfig => {
+                        // Errors are logged and the old config is kept.
+                        let _ = app.reload_config();
+                    }
                     HostCommand::ToggleVisible => app.toggle_visible(),
                     HostCommand::TogglePetVisible(id) => app.toggle_pet_visible(&id),
                     HostCommand::SetMoveMode(mode) => app.set_move_mode(mode),
                     HostCommand::SetPetMoveMode { id, mode } => app.set_pet_move_mode(&id, mode),
                     HostCommand::SetLayer(layer) => app.set_layer(&layer),
+                    HostCommand::Control(call) => app.handle_control(call),
                     HostCommand::Quit => {
                         tracing::info!("quit requested from tray");
                         app.exit = true;
@@ -1084,6 +1638,16 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
         })
         .map_err(|e| anyhow::anyhow!("failed to register host channel: {e}"))?;
     let _watcher = ConfigWatcher::start(app.config_path.clone(), host_tx.clone());
+
+    // Settings-GUI control channel (`docs/GUI_ROADMAP.md` G1). Disabled
+    // (with a warning) when there is no writable XDG_RUNTIME_DIR.
+    app.control = control::start(Box::new({
+        let host_tx = host_tx.clone();
+        move |call| {
+            // The main loop is the only place that mutates pet state.
+            let _ = host_tx.send(HostCommand::Control(call));
+        }
+    }));
 
     // System tray (StatusNotifierItem) with the pets as menu entries.
     if app.config.general.tray_enabled {
@@ -1111,13 +1675,18 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
     );
 
     while !app.exit {
-        // Sleep until the next pet deadline or physics step; None = block
-        // until an event arrives (input, signal, wayland).
-        let timeout = app
-            .runtime
-            .next_deadline()
+        // Sleep until the next pet deadline, physics step or control-quit
+        // deadline; None = block until an event arrives (input/signal/wayland).
+        // A paused host ignores animation deadlines (control SetPaused).
+        let pet_deadline = if app.paused {
+            None
+        } else {
+            app.runtime.next_deadline().into_iter().chain(app.physics_deadline()).min()
+        };
+        let timeout = pet_deadline
             .into_iter()
-            .chain(app.physics_deadline())
+            .chain(app.exit_at)
+            .chain(app.status_deadline())
             .min()
             .map(|d| d.saturating_duration_since(Instant::now()));
         event_loop
@@ -1127,12 +1696,21 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
             break;
         }
         let now = Instant::now();
+        // Control `Quit`: the response had a moment to flush, stop now.
+        if let Some(deadline) = app.exit_at {
+            if now >= deadline {
+                app.exit = true;
+                break;
+            }
+        }
         let dt = now.duration_since(app.last_loop).as_secs_f32().min(0.05);
         app.last_loop = now;
-        if app.runtime.tick_all() || app.physics_step(dt) {
+        if !app.paused && (app.runtime.tick_all() || app.physics_step(dt)) {
             app.needs_redraw = true;
         }
-        app.apply_positions();
+        let moved = app.apply_positions();
+        app.notify_moved(moved);
+        app.maybe_broadcast_status();
         if app.needs_redraw {
             app.needs_redraw = false;
             if let Err(e) = app.draw() {
@@ -1323,5 +1901,67 @@ mod tests {
         assert_ne!(center.x, corner.x, "each pet keeps its own placement");
         assert_eq!(center.y, 1080.0 - 16.0 - 110.0);
         assert_eq!(corner.y, 1080.0 - 32.0 - 110.0);
+    }
+
+    /// G1 `Reload` patches are in-memory config edits: every placement key
+    /// maps onto the same `Option` field a hand-written `[[pets]]` would set,
+    /// and absent keys stay inherited.
+    #[test]
+    fn control_patch_maps_onto_pet_instance() {
+        let mut pet = PetInstance::default();
+        let patch = PetPatch {
+            id: "cat".into(),
+            width: Some(200),
+            height: None,
+            anchor: Some("bottom|left".into()),
+            margins: Some([1, 2, 3, 4]),
+            layer: Some("overlay".into()),
+            mode: Some("physics".into()),
+            output: Some("DP-1".into()),
+            click_through: Some(false),
+            disable_fullscreen_hide: Some(true),
+            enabled: Some(false),
+        };
+        apply_pet_patch(&mut pet, &patch);
+        assert_eq!(pet.width, Some(200));
+        assert_eq!(pet.height, None, "absent patch key keeps inheritance");
+        assert_eq!(pet.anchor.as_deref(), Some("bottom|left"));
+        assert_eq!(
+            (
+                pet.margin_top,
+                pet.margin_right,
+                pet.margin_bottom,
+                pet.margin_left
+            ),
+            (Some(1), Some(2), Some(3), Some(4))
+        );
+        assert_eq!(pet.layer.as_deref(), Some("overlay"));
+        assert_eq!(pet.mode.as_deref(), Some("physics"));
+        assert!(
+            pet.move_mode.is_none(),
+            "the canonical mode clears the alias"
+        );
+        assert_eq!(pet.output.as_deref(), Some("DP-1"));
+        assert_eq!(pet.click_through, Some(false));
+        assert_eq!(pet.disable_fullscreen_hide, Some(true));
+        assert!(!pet.enabled);
+
+        // An empty patch changes nothing.
+        let mut untouched = PetInstance::default();
+        apply_pet_patch(&mut untouched, &PetPatch::default());
+        assert_eq!(untouched.width, None);
+        assert!(untouched.enabled);
+        assert_eq!(untouched.mode, None);
+    }
+
+    #[test]
+    fn rect_conversion_rounds_to_logical_pixels() {
+        let rect = Rect {
+            x: 1.4,
+            y: 2.6,
+            width: 10.0,
+            height: 20.4,
+        };
+        assert_eq!(rect_i32(rect), [1, 3, 10, 20]);
     }
 }

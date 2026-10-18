@@ -107,6 +107,15 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ConfigCommand,
     },
+    /// Send one JSON Lines request to the running host's control socket.
+    Control {
+        /// Request JSON (default: ListPets; `-` reads it from stdin).
+        #[arg(value_name = "JSON")]
+        json: Option<String>,
+        /// Control socket path (default: $XDG_RUNTIME_DIR/petweave/control.sock).
+        #[arg(long, value_name = "PATH")]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

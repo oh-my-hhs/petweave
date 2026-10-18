@@ -8,7 +8,7 @@
 > [TECH_STACK.md](TECH_STACK.md)（技术选型，§4.10 已预留 egui 设置面板）· [PACKAGES.md](PACKAGES.md)
 >
 > 状态图例：`✅ 完成` · `🔶 进行中` · `⬜ 未开始` · `⏸ 暂缓`
-> 版本：v0.2（G0 已落地）· 最后更新：2026-10-17
+> 版本：v0.3（G0/G1 已落地）· 最后更新：2026-10-18
 
 ---
 
@@ -315,8 +315,36 @@ click_through = false
 
 ### 6.4 版本协商
 
-`Hello.protocol = 1`；宿主 `caps` 形如 `{"protocol":1,"placement":true,"preview":true}`。
+`Hello.protocol = 1`；宿主 `caps` 形如 `{"protocol":1,"placement":true,"size":true,"events":true,"reload_patch":true,"preview":false}`。
 版本不匹配时：宿主回 `error.code = "protocol_mismatch"`，GUI 显示"设置面板与宠物进程版本不一致，请一起升级"，并**只允许**配置编辑。
+
+### 6.5 实现说明（G1 已落地）
+
+实现：`crates/petweave/src/platform/control.rs`（协议类型 + socket 服务 + 白盒测试），
+主循环侧在 `App::handle_control`。与上文草案的差异/补充：
+
+- **运行期只读不写盘**：`SetPlacement` / `SetSize` / `SetVisible` / `SetMoveMode` /
+  `SetPaused` 只改运行状态（D10：宿主不写配置）；GUI 负责把最终值写进 TOML。
+  `Reload` 不带 `pets` = 重读磁盘；带 `pets` = 把补丁应用到内存配置后 `apply_config`，
+  **同样不落盘**（滑杆预览用），下一次磁盘重载会回到文件值。
+- `RenderPet` 暂未实现，返回 `error.code = "unsupported"`，`caps.preview = false`；
+  GUI 预览按 D7 本地复用 `petweave` 的 `runtime` 渲染（G2/G3）。
+- 事件：`PetsChanged` 在任何宠物集合/参数/显隐/移动模式/层级变化后广播（含热重载）；
+  `PetMoved` 在拖拽/物理移动时限流 ~20Hz，并在全部宠物静止后补发最后一帧；
+  `Status` 每 5s 一次，`{fps: 目标帧率, rss_kb, pets: 运行中数量}`。
+- `ListPets[].size_owner` 取值 `config`（显式 `[[pets]].width/height`）/ `pet`
+  （`preferred_size`）/ `script`（Lua 脚本自定尺寸）/ `default`（回退 `[render]`）；
+  `rect` 对未运行的宠物也按配置推算，便于 GUI 列表布局。
+- `Quit` 先把响应写回客户端，主循环最多等 100ms 再退出，避免"命令成功但连接先断"。
+- 错误码：`bad_json` / `bad_request` / `unknown_op` / `line_too_long` /
+  `protocol_mismatch` / `pet_not_found` / `invalid_argument` / `internal` /
+  `reload_failed` / `unsupported`。
+- 响应与事件的到达顺序**不保证**：`PetsChanged` 可能先于本次请求的响应到达同一连接
+  （客户端必须按 `id` 匹配响应，忽略或排队 `event` 报文，参考 `petweave control` 客户端）。
+- 权限：目录 0700、socket 0600，无 token（同用户信任模型）；`XDG_RUNTIME_DIR`
+  缺失/不可绑定时只告警并禁用，宿主照常运行。
+- 调试客户端：`petweave control '<json>' [--socket PATH]` 做一次 JSON Lines 往返，
+  跳过主动事件后打印响应（见 README 子命令）。
 
 ---
 
@@ -349,7 +377,8 @@ click_through = false
 
 - **脏状态**：与"上次保存快照"比较（解析后的 `Config` 结构比较），而非逐字段 dirty 标记；切换页签/关闭窗口时若有未保存改动 → 确认弹窗。
 - **保存并应用** → §5.5 写盘 → `Reload` → 等 `PetsChanged` → 清脏状态；失败保留脏状态并显示错误。
-- **画布拖拽** → 立刻 `SetPlacement`（即时反馈）→ 松手写配置（持久化）。宿主回报 `PetMoved` 覆盖画布位置，避免 GUI 与真实位置漂移。
+- **画布拖拽** → 立刻 `SetPlacement`（响应里带新 `rect`，即时反馈）→ 松手写配置（持久化）。
+  用户直接拖动桌面宠物、物理落定等宿主侧位移由 `PetMoved` 事件回流，避免 GUI 与真实位置漂移。
 - **预览**：列表缩略图懒加载（选中/可见时 10fps 刷新）；参数页右上角 320×320 动画预览；两者都走 `runtime` + `Frame` → `ColorImage`，并缓存纹理（键：pet id + 尺寸 + 帧序号）。
 - **字体与主题**：跟随系统深浅色；`fontdb` 优先匹配 `Noto Sans CJK SC` → `Source Han Sans` → `WenQuanYi`；找不到时界面仍可用但提示"中文显示可能异常"。
 - **HiDPI**：`ViewportBuilder::with_title` + 由 eframe 自动处理 `pixels_per_point`；画布坐标一律用**逻辑像素**，与宿主 margin 语义一致。
@@ -442,14 +471,25 @@ click_through = false
 - [x] 测试：core 35 项（迁移/继承优先级/id 唯一/数量上限/margin 范围/`[pet]` 兼容/`[[pets]]` 胜出/`mode` 别名）+ 宿主 63 项（placement 反算 round-trip、多宠物装载/增删/换 kind/尺寸、独立物理、双 BongoCat 共享资产、托盘菜单）；共 **98 项全绿**
 - 验收：✅ 三宠物同屏（2×BongoCat + sprite）在 niri 实测：三块独立 SHM（scale 1.5 → 物理 ×2）、各自 anchor/click_through/mode；热重载 300ms 内完成增删/重建/重配置；旧 `[pet]` 配置零改动可跑并通过 `config migrate` 无损升级
 
-### G1 · 控制通道 ⬜ 未开始
+### G1 · 控制通道 ✅ 完成
 
-- [ ] `platform/control.rs`：socket 监听线程 + JSON Lines 解析 + 每请求 oneshot 回包
-- [ ] `HostCommand::Control(..)` 进入主循环，所有变更在主线程应用
-- [ ] 实现 §6.3 全部 op 与事件（`RenderPet` 可延后到 G2）
-- [ ] 权限：目录 0700 / socket 0600；`XDG_RUNTIME_DIR` 缺失时禁用
-- [ ] 协议单测：golden 报文、未知 op、超长行、版本不匹配、并发客户端
-- 验收：用 `socat` 或测试客户端 `ListPets` 拿到三只宠物的真实 rect，并 `SetPlacement` 移动其中一只
+- [x] `platform/control.rs`：socket 监听线程 + JSON Lines 解析 + 每请求回包
+      （每连接一个 reader + writer 线程，主线程只投递 `ControlCall`，客户端慢不会卡宿主）
+- [x] `HostCommand::Control(..)` 进入主循环，所有变更在主线程应用
+- [x] 实现 §6.3 的 `Hello` / `ListPets` / `ListOutputs` / `Reload`（含内存补丁）/
+      `SetPlacement` / `SetSize` / `SetVisible` / `SetMoveMode` / `SetPaused` / `Quit` 与
+      `PetsChanged` / `PetMoved` / `Status` 事件；`RenderPet` 延后（返回 `unsupported`，
+      `caps.preview=false`）
+- [x] 权限：目录 0700 / socket 0600；`XDG_RUNTIME_DIR` 缺失时告警并禁用
+- [x] 协议单测 9 项：golden 报文、未知 op、坏 JSON、响应/事件形状、版本不匹配、
+      超长行（64 KiB）、socket 权限、端到端往返 + 事件广播 + 断连清理
+- [x] `petweave control '<json>'` 调试客户端（README 已记录）
+- 验收：✅ 在 niri 实测：两只 demo 宠物 `ListPets` 拿到真实 rect
+  （`[822,987,64,64]` / `[64,971,64,64]`，eDP-1 scale 2），`SetPlacement` 移到
+  `top|left` 后 rect 变 `[30,20,64,64]`，`SetSize` 128 等比缩放、
+  `SetVisible`/`SetMoveMode`/`SetPaused`/`Reload`（磁盘与补丁）/`Quit` 全部生效；
+  `Hello protocol=99` 返回 `protocol_mismatch`，未知 op 返回 `unknown_op`，
+  socket 实际权限为 `drwx------` + `srw-------`
 
 ### G2 · 设置面板 MVP ⬜ 未开始
 
@@ -522,7 +562,7 @@ crates/petweave-settings/
 | `crates/petweave/src/main.rs` | 改用 lib 模块；新增 `settings` 子命令；`doctor` 逻辑抽出复用 |
 | `crates/petweave/src/app.rs` | 单 surface → `Vec<PetSurface>`；每宠物拖拽/物理/可见性；`HostCommand::Control` |
 | `crates/petweave/src/platform/wayland.rs` | 拆分为共享连接 + 每宠物 surface 状态 |
-| `crates/petweave/src/platform/control.rs` | **新增**：Unix socket 服务 |
+| `crates/petweave/src/platform/control.rs` | **新增**（G1 已实现）：Unix socket 服务 + 协议类型 + 测试 |
 | `crates/petweave/src/platform/tray.rs` | 菜单增加「设置…」 |
 | `crates/petweave/src/cli.rs` | `settings` / `config migrate` |
 | `petweave.toml.example` | 换成 `[[pets]]` 示例 + 旧格式注释说明 |
@@ -536,7 +576,7 @@ crates/petweave-settings/
 |---|---|---|
 | core 单测 | 迁移（`[pet]`→`[[pets]]`）、继承优先级、id 唯一、数量上限、margin 范围 | `cargo test -p petweave-core` |
 | 宿主单测 | placement 反算、增删重建、控制命令在主线程应用、socket 权限 | `cargo test -p petweave` |
-| 协议测试 | golden 请求/响应、未知 op、超长行、协议不匹配、并发连接 | `cargo test -p petweave`（`platform::control` 模块内） |
+| 协议测试 | golden 请求/响应、未知 op、坏 JSON、超长行、协议不匹配、socket 权限、端到端往返 + 事件广播 + 断连（9 项） | `cargo test -p petweave --lib platform::control` |
 | GUI 测试 | `egui_kittest`：表单→脏→保存→文件内容（含注释保留）；校验阻断 | `cargo test -p petweave-settings` |
 | 手工矩阵 | niri（当前环境）/ Hyprland / Sway / KWin；单屏与双屏；scale 1.0/1.5/2.0；有/无 CJK 字体；GL 与 wgpu | 记录在 §14 |
 
@@ -569,7 +609,7 @@ crates/petweave-settings/
 | Q3 | 画布是否需要"按工作区显示"的 per-pet 开关？ | 依赖 `ext-workspace` 协议，暂不做 | M4 再议 |
 | Q4 | 是否需要"布局预设/主题"（一键切换多套摆放）？ | 待定，倾向 G5 | 用户反馈 |
 | Q5 | 缩略图是否落盘缓存到 `$XDG_CACHE_HOME/petweave/thumbs`？ | 倾向不落盘（每次启动重渲染，成本极低） | 实现时决定 |
-| Q6 | `RenderPet` 兜底接口是否保留？GUI 能本地加载所有内置 kind 时可能多余 | 保留但可延后实现 | G2 决定 |
+| Q6 | `RenderPet` 兜底接口是否保留？GUI 能本地加载所有内置 kind 时可能多余 | **已定：暂不实现。** G1 返回 `unsupported` 且 `caps.preview=false`；GUI 按 D7 本地渲染预览。若 G2 发现某些包无法在 GUI 侧加载，再回头实现 | ✅ G1 决定 |
 | Q7 | 是否需要 GUI 常驻托盘（关闭窗口后后台）？ | 倾向不需要（宿主已有托盘） | 用户反馈 |
 | Q8 | 诊断页的"一键修复"（`doctor --apply`）是否允许在 GUI 内提权？ | 倾向只显示命令 + 复制按钮 | 安全评审 |
 | Q9 | 是否允许 GUI 用 `width/height` **强制覆盖**宠物固有尺寸？ | **已定（Q1A/Q2A）：允许，且只等比缩放不拉伸。** 显式配置 > 宠物固有尺寸 > `[render]`；只写一边时另一边按比例推算。落地：§5.2 第 4 条、`resolve_surface_size`/`scale_to_fit`、控制通道 `SetSize` | ✅ 已实现 |
@@ -584,7 +624,7 @@ crates/petweave-settings/
 | 阶段 | 状态 | 已完成 | 备注 |
 |---|---|---|---|
 | G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试 | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
-| G1 控制通道 | ⬜ | 协议草案（§6） | 未写代码 |
+| G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
 | G2 面板 MVP | ⬜ | 信息架构（§7） | 未写代码 |
 | G3 布局/预览 | ⬜ | 交互约定（§7） | 未写代码 |
 | G4 诊断/分发 | ⬜ | — | — |
@@ -592,12 +632,12 @@ crates/petweave-settings/
 
 手工兼容性矩阵（每阶段末补测）：
 
-| 合成器 | 宿主多宠物 | GUI 启动 | 画布定位 | 备注 |
-|---|---|---|---|---|
-| niri（当前） | ✅ | ⬜ | ⬜ | 三宠物同屏 + 热增删已验证；设置窗口会被平铺，需文档给浮动规则 |
-| Hyprland | ⬜ | ⬜ | ⬜ | — |
-| Sway | ⬜ | ⬜ | ⬜ | — |
-| KWin (Plasma 6) | ⬜ | ⬜ | ⬜ | — |
+| 合成器 | 宿主多宠物 | 控制通道 | GUI 启动 | 画布定位 | 备注 |
+|---|---|---|---|---|---|
+| niri（当前） | ✅ | ✅ | ⬜ | ⬜ | 三宠物同屏 + 热增删已验证；G1 控制通道在两宠物下全 op 实测；设置窗口会被平铺，需文档给浮动规则 |
+| Hyprland | ⬜ | ⬜ | ⬜ | ⬜ | — |
+| Sway | ⬜ | ⬜ | ⬜ | ⬜ | — |
+| KWin (Plasma 6) | ⬜ | ⬜ | ⬜ | ⬜ | — |
 
 ---
 
@@ -607,3 +647,4 @@ crates/petweave-settings/
 |---|---|---|
 | 2026-10-17 | v0.1 | 初稿：确认 egui/eframe + 独立二进制、先多宠物、表单+画布双布局；建立 G0–G5 与需求/协议/配置草案 |
 | 2026-10-17 | v0.2 | **G0 落地**：配置 v2（`[[pets]]` + `[render]` 继承 + `[pet]` 兼容 + `config migrate`）、每宠物独立 surface/拖拽/物理/显隐、热增删（`ReloadOutcome`）、共享 `AssetCache`（Q1 定案）、多宠物托盘、`petweave` lib crate（D7 落地）；§5.2 第 4 条（尺寸优先级）按实现修订 |
+| 2026-10-18 | v0.3 | **G1 落地**：`platform/control.rs`（JSON Lines / 64 KiB 行上限 / 0700+0600）、主线程 `HostCommand::Control` 分发、§6.3 全部 op（`RenderPet` 延后，Q6 定案）与三类事件、`petweave control` 调试客户端、9 项协议测试 + niri 双宠物实机验收；宿主仍零 GUI 依赖（新增依赖仅 `serde_json`） |

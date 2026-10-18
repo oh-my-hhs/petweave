@@ -58,6 +58,7 @@ petweave/
 │           │   ├── system.rs        # sysinfo 采样
 │           │   ├── singleton.rs     # flock PID 单例
 │           │   ├── tray.rs          # ksni 托盘
+│           │   ├── control.rs       # 设置界面控制通道（JSON Lines socket）
 │           │   └── mod.rs
 │           ├── graphics/mod.rs  # Frame 转换、缩放、alpha bbox、SVG 栅格化
 │           └── package.rs       # .petweave 包：仓库、安装、打包、XPM 导入
@@ -225,7 +226,9 @@ pub enum Event {
   顺序 = 配置顺序 = surface 叠放顺序
 - `fullscreen: FullscreenTracker`：全屏隐藏状态（全局判定，各宠物按自己的 layer/开关决定是否让位）
 - `tray_shared` / `tray_handle`：托盘镜像状态（每宠物显隐 + 模式）
-- `last_loop`：物理 dt
+- `control: Option<ControlHandle>`：设置界面控制通道（G1）；`None` = 未启用
+- `paused`：控制通道 `SetPaused` 的运行期暂停（跳过 tick/physics，仍可处理命令）
+- `last_loop`：物理 dt；`last_status` / `last_moved`：控制事件限流
 
 `PetMotion`（每宠物）持有 `drag` / `physics` / `pending_position`；`blank` 同样每宠物一份，
 隐藏时提交透明帧来"擦掉"surface。
@@ -242,24 +245,30 @@ pub enum Event {
 |---|---|---|
 | `WaylandSource` | Wayland 事件队列 | 输入/表面/输出/协议事件（直接派发到 `App`） |
 | `Channel<Event>` | calloop channel | 输入线程、系统采样线程 → 宠物事件 |
-| `Channel<HostCommand>` | calloop channel | 配置监听、托盘 → 宿主内部命令 |
+| `Channel<HostCommand>` | calloop channel | 配置监听、托盘、控制通道 → 宿主内部命令 |
 | `Signals` | calloop signals | `SIGINT` / `SIGTERM` → 优雅退出 |
 
-每次 `dispatch` 返回后：取 `dt` → `runtime.tick_all()` / `physics_step()` →
-`apply_position()`（提交 margin）→ 需要则 `draw()`。
+每次 `dispatch` 返回后：取 `dt` → `runtime.tick_all()` / `physics_step()`
+（`paused` 时跳过）→ `apply_positions()`（提交 margin，并收集移动的宠物）→
+向控制客户端广播 `PetMoved`/`Status` → 需要则 `draw()`。
 
 ### 5.2 `HostCommand` — 宿主内部命令（不经宠物）
 
 ```rust
 pub enum HostCommand {
-    ReloadConfig,                        // inotify 检测到配置变化
+    ReloadConfig,                        // inotify 检测到配置变化 / 控制通道 Reload
     ToggleVisible,                       // 托盘左键 / "显示·隐藏全部"
     TogglePetVisible(String),            // 托盘每宠物子菜单
     SetMoveMode(MoveMode),               // "移动模式（全部）"单选
     SetPetMoveMode { id, mode },         // 每宠物移动模式
+    SetLayer(String),                    // 托盘"渲染层级"（top/overlay）
+    Control(ControlCall),                // 设置界面控制通道请求（G1）
     Quit,                                // 托盘菜单退出
 }
 ```
+
+`Control(ControlCall)` 由 socket reader 线程投递，**只在主线程**由
+`App::handle_control` 应用并通过 `Outbox` 回包；详见 §6.8。
 
 ### 5.3 拖拽与轻物理
 
@@ -351,6 +360,23 @@ flock 随进程死亡自动释放，避免 stale-PID 竞态；文件在 `Drop` �
 左键切换显隐；菜单含显隐、移动模式单选组（中文标签）、退出。菜单标签在打开时从
 共享状态读取，所以总是最新。`assume_sni_available(true)`：没有
 StatusNotifierWatcher（如 niri 无托盘守护）时保持等待而不是让宿主失败。
+
+### 6.8 `control.rs` — 设置界面控制通道（G1）
+
+`${XDG_RUNTIME_DIR}/petweave/control.sock`，目录 `0700`、socket `0600`，JSON Lines，
+单行上限 64 KiB；`XDG_RUNTIME_DIR` 缺失或无法绑定时告警禁用，宿主继续运行。
+协议（op/事件/版本协商/错误码）以 [`GUI_ROADMAP.md`](GUI_ROADMAP.md) §6 为准。
+
+- **线程**：accept 线程 → 每连接一个 reader（解析请求）+ 一个 writer（回包/事件）。
+  reader 把 `ControlCall { id, op, out }` 投进 `Channel<HostCommand>`；主线程应用后
+  通过 `Outbox` 把响应排进该连接的 writer 队列。writer 阻塞也只影响该客户端。
+- **主线程边界**：`ControlCall` 的 op 由 `App::handle_control` 执行——`SetPlacement`/
+  `SetSize` 直接改 `PetSurface`/`Runtime`，`Reload` 走 `apply_config`，`Quit` 走
+  `exit_at`（最多 100ms 让响应刷出）。后台线程不碰宠物状态。
+- **事件**：`PetsChanged`（宠物集合/参数/显隐/模式/层级变化后）、`PetMoved`
+  （拖拽/物理，~20Hz 限流 + 静止补发）、`Status`（5s，目标 fps + RSS + 运行数）。
+- **持久化**：宿主只读配置（D10）；`Set*`/带补丁的 `Reload` 都不写盘，GUI 负责保存。
+- **调试**：`petweave control '<json>'` 做一次往返，跳过主动事件后打印响应。
 
 ---
 
@@ -511,6 +537,9 @@ sequenceDiagram
 | system sampler | `sysinfo` 周期采样 | `Channel<Event>` |
 | config watcher | inotify 去抖 | `Channel<HostCommand>` |
 | tray (ksni) | DBus StatusNotifierItem 服务 | `Channel<HostCommand>` + `Arc<Mutex<TrayShared>>` |
+| control listener | accept 控制通道连接 | 每连接起 reader/writer 线程 |
+| control reader（每连接） | 解析 JSON Lines、查限长 | `Channel<HostCommand>`（`ControlCall`） |
+| control writer（每连接） | 写响应/主动事件 | `mpsc::Receiver<String>`（由主线程/广播投递） |
 
 原则：**所有 Wayland 与宠物状态变更都发生在主线程**；后台线程只做 IO/采样并通过
 channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` / 系统快照 /
@@ -546,13 +575,15 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
 
 ## 13. 测试
 
-`#[cfg(test)]` 单测随代码内联，共 **64 项**，覆盖：
+`#[cfg(test)]` 单测随代码内联，共 **136 项**（宿主 98 + core 38），覆盖：
 
 - core：配置解析/校验/默认值、MoveMode 解析、HH:MM 时钟解析、`Frame` 绘制与 alpha 合成、
   manifest 解析/校验、反应引用检查。
 - 宿主：layer/anchor 解析、BGRA 转换/缩放/alpha bbox/SVG 栅格化、物理步进与静止收敛、
   托盘图标转换与菜单状态、包 XPM 解析、宠物行为（Bongo 帧选择/睡眠窗口/镜像、
   Sprite 网格切帧/反应切换、Lua 沙箱 `io` 拦截/死循环中止/气泡过期）。
+- 控制通道：golden 请求、未知 op/坏 JSON、响应与事件形状、协议版本、64 KiB 行上限、
+  socket 权限（0700/0600）、端到端往返 + 事件广播 + 断连清理。
 
 `--preview <path>` 可脱离 Wayland 把宠物当前帧导出 PNG，便于调试与制作包封面。
 
@@ -584,6 +615,7 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
 | M1 BongoCat 移植 | ✅ | 爪击/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
 | M2 SDK / 角色包 | ✅ | `.petweave`、声明式精灵、Lua 沙箱、CLI、示例包、SVG 渲染 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存（G0）已完成；设置面板见 M3.5 |
+| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物运行时 ✅、G1 控制通道 ✅；G2 egui 设置面板待做 |
 | M4 深度集成 | ⬜ 未开始 | GPU 后端、Live2D、外部进程协议、打包分发 |
 
 已知边界：
@@ -591,7 +623,8 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
 - 宠物数量上限 12（`MAX_PETS`），每宠物一 surface；surface 数量保护合成器与内存。
 - `kind` 变更会重建该宠物（状态丢失）；`output` 变更会重建该 surface；超过 12 只或 id
   重复时配置校验直接拒绝。
-- 尺寸优先级：宠物固有尺寸（如 `cat_height`）优先于 `width/height`。
+- 尺寸优先级：显式 `[[pets]].width/height` > 宠物固有尺寸（如 `cat_height`）> `[render]`；
+  只写一边时另一边按原图比例推算（`resolve_surface_size`），内容等比缩放不拉伸。
 - Lua 脚本变更需重启（不做进程内重新执行）；脚本 state 无持久化。
 - 全屏隐藏依赖合成器实现 `foreign-toplevel-management`（niri 未实现，优雅降级）。
 - CPU/SHM 渲染，暂无 GPU 路径与 Live2D。

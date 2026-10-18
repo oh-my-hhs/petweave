@@ -1,7 +1,7 @@
 # PetWeave 功能实现计划表
 
 > 依据 `docs/TECH_STACK.md` 的里程碑划分。`- [x]` 表示已完成，`- [ ]` 表示未完成。
-> 更新日期：2026-10-17（M3 进行中；新增 M3.5 图形设置界面，详见 `docs/GUI_ROADMAP.md`）
+> 更新日期：2026-10-18（M3 完成；M3.5 进行中，G0/G1 已落地，详见 `docs/GUI_ROADMAP.md`）
 
 ## 当前状态
 
@@ -14,7 +14,7 @@
 | M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS`；两个参考包端到端测试通过 |
 | M2.7 尺寸与摆放契约（GUI 前置） | ✅ 完成 | 尺寸优先级 `[[pets]]` > 宠物 > `[render]`、等比缩放不拉伸、删除 anchor/bob、`pet.offset(dx,dy)` + `padding`；`Pet::resize_to` / `Runtime::fit_frames` 让配置尺寸真正缩放内容 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存（设置面板移交 M3.5） |
-| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物运行时与配置 v2 ✅；GUI 独立进程（egui/eframe）待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
+| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物运行时与配置 v2 ✅；G1 控制通道（`control.sock` JSON Lines）✅；G2 GUI 独立进程（egui/eframe）待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
 ---
@@ -99,7 +99,11 @@
 
 - [x] G0 多宠物运行时与配置 v2：`[[pets]]` 数组 + `[render]` 默认值继承 + 旧 `[pet]` 兼容迁移 + 每宠物独立 surface + 运行中增删
       （详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G0；资源基线见文末）
-- [ ] G1 控制通道：`$XDG_RUNTIME_DIR/petweave/control.sock`（JSON Lines、版本协商、权限 0600）
+- [x] G1 控制通道：`$XDG_RUNTIME_DIR/petweave/control.sock`（JSON Lines、版本协商、目录 0700/socket 0600）；
+      `Hello`/`ListPets`/`ListOutputs`/`Reload`（含内存补丁）/`SetPlacement`/`SetSize`/`SetVisible`/
+      `SetMoveMode`/`SetPaused`/`Quit` + `PetsChanged`/`PetMoved`/`Status` 事件；`RenderPet` 延后
+      （`caps.preview=false`）；`petweave control '<json>'` 调试客户端；9 项协议测试 + niri 双宠物实机验收
+      （详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G1）
 - [ ] G2 设置面板 MVP：`crates/petweave-settings`（egui/eframe）+ 宠物列表 + 参数表单 + 原子保存（`toml_edit` 保注释）
 - [ ] G3 布局画布与实时预览：按显示器分页拖拽定位（吸附）+ 缩略图/动画预览（复用 `Frame` 渲染）
 - [ ] G4 诊断与分发：内嵌 `doctor`、托盘「设置…」、PKGBUILD/Nix 产物、README 章节

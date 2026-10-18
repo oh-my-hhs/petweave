@@ -188,6 +188,7 @@ petweave --preview out.png        # 无需 Wayland，把宠物当前帧导出为
 petweave list-devices             # 识别键盘设备
 petweave doctor                    # 环境体检（配置/会话/权限）
 petweave import oneko.xpm -o oneko.png   # Oneko 的 XPM 精灵表 → PNG
+petweave control '{"id":1,"op":"ListPets"}'  # 控制通道：读取每只宠物真实位置/尺寸
 ```
 
 ### 命令行参数
@@ -218,6 +219,25 @@ petweave import oneko.xpm -o oneko.png   # Oneko 的 XPM 精灵表 → PNG
 | `petweave package <目录> -o <输出>` | 把包目录打包成 `.petweave` zip |
 | `petweave import <xpm> -o <png>` | Oneko 风格 XPM 精灵表 → PNG |
 | `petweave config migrate [--write] [-c PATH]` | 把旧 `[pet]` 单宠物配置改写成 `[[pets]]`（保留注释；`--write` 先备份 `.bak`） |
+| `petweave control '<JSON>' [--socket PATH]` | 向运行中的宿主控制通道发一条请求并打印响应（省略 JSON 时默认 `ListPets`；`-` 从 stdin 读） |
+
+### 控制通道（设置界面前置）
+
+宿主在 `${XDG_RUNTIME_DIR}/petweave/control.sock` 提供 JSON Lines 控制通道
+（目录 `0700`、socket `0600`），供设置界面读取每只宠物的真实位置/尺寸并即时调整。
+用 `petweave control` 可以直接试：
+
+```bash
+petweave control '{"id":1,"op":"Hello","protocol":1,"client":"cli"}'
+petweave control '{"id":2,"op":"ListPets"}'
+petweave control '{"id":3,"op":"SetPlacement","pet":"bongo-main","anchor":"bottom|left","margins":[0,0,32,64]}'
+petweave control '{"id":4,"op":"SetSize","pet":"bongo-main","width":300,"height":0}'
+```
+
+响应形如 `{"id":2,"ok":true,"data":[...]}`，失败时为
+`{"id":2,"ok":false,"error":{"code":"pet_not_found","message":"…"}}`。
+`SetPlacement`/`SetSize`/`SetVisible`/`SetMoveMode` 只改运行状态，不写配置文件；
+完整 op/事件/版本协商见 [`docs/GUI_ROADMAP.md`](docs/GUI_ROADMAP.md) §6。
 
 ### 权限
 

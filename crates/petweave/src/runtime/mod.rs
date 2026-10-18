@@ -288,6 +288,30 @@ impl Runtime {
         }
     }
 
+    /// Set one pet's configuration box at runtime (`SetSize` over the control
+    /// channel): a side left as `None` is derived from the artwork aspect
+    /// ratio, then the pet instance and its render frame are resized.
+    ///
+    /// Returns the resulting surface size. Runtime-only: the config file is
+    /// untouched, so the next hot reload restores the written values.
+    pub fn set_box(
+        &mut self,
+        id: &str,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> Option<(u32, u32)> {
+        let slot = self.slots.iter_mut().find(|s| s.id() == id)?;
+        // `0` means "inherit/derive" throughout the size contract.
+        slot.pet.instance.width = Some(width.unwrap_or(0));
+        slot.pet.instance.height = Some(height.unwrap_or(0));
+        let (w, h) = slot.surface_size();
+        slot.pet.placement.width = w;
+        slot.pet.placement.height = h;
+        slot.instance.resize_to(w, h);
+        slot.fit_frame();
+        Some((w, h))
+    }
+
     /// Earliest instant any pet wants to be woken up (e.g. paw-hold expiry).
     pub fn next_deadline(&self) -> Option<Instant> {
         self.slots
@@ -650,6 +674,17 @@ mod tests {
         });
         assert!(!rt.on_event_to("b", click.clone()));
         assert!(!rt.on_event_to("missing", click));
+    }
+
+    /// G1 `SetSize`: a runtime-only box change resizes the pet instance and
+    /// its frame, deriving the missing side from the artwork aspect.
+    #[test]
+    fn set_box_resizes_runtime_only() {
+        let mut rt = Runtime::new(&cfg(TWO_DEMOS));
+        assert_eq!(rt.set_box("a", Some(128), None), Some((128, 128)));
+        assert_eq!(rt.slots()[0].surface_size(), (128, 128));
+        assert_eq!(rt.slots()[0].frame.width, 128, "frame follows the box");
+        assert_eq!(rt.set_box("missing", Some(10), None), None);
     }
 
     #[test]

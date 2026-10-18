@@ -103,7 +103,7 @@ impl std::fmt::Display for MoveMode {
 
 /// Derive a movement mode from an explicit `mode` string and the legacy
 /// `physics` bool: an explicit `mode` wins; an empty `mode` falls back to
-/// `physics = true` → physics, `physics = false` → drag.
+/// `physics = true` → physics, anything else → drag (the default).
 pub fn resolve_move_mode(mode: &str, legacy_physics: bool) -> MoveMode {
     MoveMode::parse(mode).unwrap_or(if legacy_physics {
         MoveMode::Physics
@@ -201,7 +201,8 @@ pub struct RenderConfig {
     /// legacy `physics` bool (M3).
     pub mode: String,
     /// Deprecated movement switch, only read when `mode` is empty:
-    /// false behaves like `mode = "drag"`.
+    /// `true` keeps the old `mode = "physics"` behaviour, `false` (the
+    /// default) is `mode = "drag"`.
     pub physics: bool,
 }
 
@@ -343,7 +344,9 @@ impl Default for RenderConfig {
             disable_fullscreen_hide: false,
             click_through: true,
             mode: String::new(),
-            physics: true,
+            // Deprecated alias default: drag is the default movement mode
+            // (the pet stays where it is dropped; physics is opt-in).
+            physics: false,
         }
     }
 }
@@ -987,7 +990,9 @@ mod tests {
     #[test]
     fn move_mode_resolution_and_validation() {
         let mut r = RenderConfig::default();
-        assert_eq!(r.move_mode(), MoveMode::Physics, "default physics=true");
+        assert_eq!(r.move_mode(), MoveMode::Drag, "drag is the default mode");
+        r.physics = true;
+        assert_eq!(r.move_mode(), MoveMode::Physics, "legacy physics=true opts in");
         r.physics = false;
         assert_eq!(r.move_mode(), MoveMode::Drag, "legacy physics=false");
         r.mode = "fixed".into();

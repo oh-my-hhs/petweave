@@ -113,7 +113,7 @@ pub fn resolve_move_mode(mode: &str, legacy_physics: bool) -> MoveMode {
 }
 
 /// Top-level configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub general: General,
     pub input: InputConfig,
@@ -147,7 +147,7 @@ struct RawConfig {
     pets_present: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct General {
     /// Animation/render loop target FPS cap.
@@ -160,7 +160,7 @@ pub struct General {
     pub tray_enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct InputConfig {
     /// Master switch for global keyboard capture.
@@ -176,7 +176,7 @@ pub struct InputConfig {
 /// Global placement/size defaults (`[render]`).
 ///
 /// `[[pets]]` entries inherit these through [`PetInstance::resolve`].
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct RenderConfig {
     /// Pet surface width in pixels.
@@ -210,7 +210,7 @@ pub struct RenderConfig {
 ///
 /// Every placement/size field is optional and inherits from `[render]` when
 /// unset; `bongo` is the kind-specific options table (`[pets.bongo]`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PetInstance {
     /// Stable instance id (unique). Generated as `{kind}-{n}` when absent.
@@ -271,7 +271,7 @@ pub struct ResolvedRender {
     pub mode: MoveMode,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct BongoConfig {
     /// Directory holding the four bongo cat PNG frames.
@@ -447,7 +447,7 @@ impl ResolvedRender {
 /// Built-in implementations (bongo, demo, …) only look at `kind`, `name`,
 /// `color` and `bongo`, so the placement fields are not duplicated here;
 /// use [`PetInstance`] for anything size/placement related.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PetConfig {
     pub name: String,
     pub enabled: bool,
@@ -546,7 +546,7 @@ impl PetInstance {
 ///
 /// The `id` in [`PetId`] form is what pets, the tray and (later) the control
 /// channel address; it is regenerated only when the config changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPet {
     /// Position in the config `pets` array.
     pub index: usize,

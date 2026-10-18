@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/petweave-core", "crates/petweave"]
+members = ["crates/petweave-core", "crates/petweave", "crates/petweave-settings"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ description = "PetWeave — a Wayland desktop pet framework"
 
 [workspace.dependencies]
 petweave-core = { path = "crates/petweave-core" }
+petweave = { path = "crates/petweave" }
 anyhow = "1.0.104"
 clap = { version = "4.6.4", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -35,6 +36,19 @@ mlua = { version = "0.11.5", features = ["lua54", "vendored", "send"] }
 resvg = "0.45.1"
 ab_glyph = "0.2.32"
 tiny-skia = "0.11.4"
+fontdb = "0.23"
+egui = "0.37.0"
+# D8: the GUI crate has its own rust-version (1.95); eframe 0.37 needs it.
+# Glow keeps the dependency tree small; the wgpu fallback (N04) is deferred.
+eframe = { version = "0.37.0", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "glow",
+    "links",
+    "wayland",
+    "x11",
+] }
 
 # Release hardening: LTO, panic=abort, stripped, single codegen unit.
 [profile.release]

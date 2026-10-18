@@ -14,7 +14,7 @@
 | M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS`；两个参考包端到端测试通过 |
 | M2.7 尺寸与摆放契约（GUI 前置） | ✅ 完成 | 尺寸优先级 `[[pets]]` > 宠物 > `[render]`、等比缩放不拉伸、删除 anchor/bob、`pet.offset(dx,dy)` + `padding`；`Pet::resize_to` / `Runtime::fit_frames` 让配置尺寸真正缩放内容 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存（设置面板移交 M3.5） |
-| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物运行时与配置 v2 ✅；G1 控制通道（`control.sock` JSON Lines）✅；G2 GUI 独立进程（egui/eframe）待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
+| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物配置 ✅、G1 控制通道 ✅、G2 设置面板 MVP ✅（`petweave-settings`，独立进程）；G3 布局画布/预览、G4 诊断/分发待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
 ---
@@ -104,8 +104,11 @@
       `SetMoveMode`/`SetPaused`/`Quit` + `PetsChanged`/`PetMoved`/`Status` 事件；`RenderPet` 延后
       （`caps.preview=false`）；`petweave control '<json>'` 调试客户端；9 项协议测试 + niri 双宠物实机验收
       （详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G1）
-- [ ] G2 设置面板 MVP：`crates/petweave-settings`（egui/eframe）+ 宠物列表 + 参数表单 + 原子保存（`toml_edit` 保注释）
+- [x] G2 设置面板 MVP：`crates/petweave-settings`（egui/eframe，MSRV 1.95，glow）+ 宠物列表/参数表单/关于页 +
+      非阻塞控制通道 client + 原子保存（`toml_edit` 逐键更新保注释、`.bak`、0600、回读校验、旧格式迁移、外部修改检测）+
+      `petweave settings` 入口；21 项库测试 + 1 项 `egui_kittest`（详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G2）
 - [ ] G3 布局画布与实时预览：按显示器分页拖拽定位（吸附）+ 缩略图/动画预览（复用 `Frame` 渲染）
+      （G2 已提供 anchor + 四边 margin 的等效表单）
 - [ ] G4 诊断与分发：内嵌 `doctor`、托盘「设置…」、PKGBUILD/Nix 产物、README 章节
 - [ ] 入口：`petweave settings`（exec 同目录 `petweave-settings`）+ 托盘菜单 + 独立二进制
 - 验收：不手写 TOML，纯 GUI 完成"三只宠物同屏、各自定位、改 BongoCat 高度并在桌面立即生效"
@@ -239,5 +242,8 @@
   （HiDPI scale 1.5 → 物理 ×2）、独立 anchor/margin/click_through/移动模式；热重载 300ms 去抖内
   完成增删（surface 创建/销毁）、换 kind（重建）、改尺寸（重配置）。共享资产缓存使同尺寸的两只
   BongoCat 只解码一次（`hits`/`decoded` 见 `runtime … asset cache` 日志），Q1 结论为**按 key 引用计数共享**。
+- **G2 体积/内存基线**：release 下 `petweave` **7.73MiB**、`petweave-settings` **12.39MiB**；
+  GUI 常驻 RSS ≈190MB（Mesa 软件 GL 回退，真实 GPU 待复测），宿主单 BongoCat（scale 2）≈14.9MB。
+  宿主依赖树仍无 egui/eframe/winit（N01）。
 - **G0 体积基线**：release 二进制 strip 后 7.46MB → **7.76MB（+4%）**，增量来自 `toml_edit`
   （`config migrate` 保注释）与多 surface/资产缓存代码；宿主仍无任何 GUI 依赖（N01 满足）。

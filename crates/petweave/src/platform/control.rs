@@ -70,7 +70,7 @@ pub fn socket_path() -> Option<PathBuf> {
 // --- requests --------------------------------------------------------------
 
 /// One request line: `{"id": 7, "op": "SetPlacement", …}`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     /// Echoed in the response. Optional so a bare `{"op":"ListPets"}` works.
     #[serde(default)]
@@ -80,7 +80,7 @@ pub struct Request {
 }
 
 /// Request operation (internally tagged by `op`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op")]
 pub enum Op {
     /// Handshake: `{"op":"Hello","protocol":1,"client":"petweave-settings"}`.
@@ -143,7 +143,7 @@ pub enum Op {
 }
 
 /// In-memory config patch (never written by the host, D10).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PetPatch {
     pub id: String,
     /// `0` = inherit/derive (same as a config file), matching `SetSize`.
@@ -175,7 +175,7 @@ pub struct PetPatch {
 // --- responses / events ----------------------------------------------------
 
 /// One response line. `data` is op-specific, `error` is set on failure.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
@@ -186,7 +186,7 @@ pub struct Response {
     pub error: Option<ProtocolError>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolError {
     pub code: String,
     pub message: String,
@@ -220,7 +220,7 @@ impl Response {
 }
 
 /// Host → client push event (no request id).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
 pub enum ControlEvent {
     /// Pet set / parameters / visibility changed.

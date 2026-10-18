@@ -14,18 +14,20 @@ English).
 
 ## 1. Commands that actually work here
 
-This environment has **no network** and the default `~/.cargo` is partially
-read-only. Always use the in-repo cargo home and `--offline`:
+Treat the network as unavailable for normal builds: the current lockfile is
+fully vendored. Downloading a **new** dependency needs network (tell the human
+first). The default `~/.cargo` is partially read-only, so always use the
+in-repo cargo home and `--offline`:
 
 ```bash
 CARGO_HOME=$PWD/.cargo-home cargo build --offline
-CARGO_HOME=$PWD/.cargo-home cargo test  --offline      # 98 tests: 63 host + 35 core
+CARGO_HOME=$PWD/.cargo-home cargo test  --offline      # 158 tests: 98 host + 38 core + 21 settings + 1 GUI
 CARGO_HOME=$PWD/.cargo-home cargo clippy --offline --all-targets
 ```
 
 Without `CARGO_HOME=$PWD/.cargo-home`, `cargo build` fails with
 `Read-only file system (os error 30)`. `.cargo-home/` holds a vendored cargo
-registry (1721 crates); do not delete it. To add a dependency you must first
+registry (~1900 crate files, GUI deps included); do not delete it. To add a dependency you must first
 make it resolvable offline — if it is not in `.cargo-home/registry`, say so
 instead of silently changing the build to require network.
 
@@ -41,7 +43,13 @@ function + unit test over anything that needs a live session:
 ```bash
 CARGO_HOME=$PWD/.cargo-home cargo test --offline -p petweave-core    # config/placement/trait
 CARGO_HOME=$PWD/.cargo-home cargo test --offline -p petweave --lib   # host logic
+CARGO_HOME=$PWD/.cargo-home cargo test --offline -p petweave-settings # store/client/UI (headless)
 ```
+
+The settings GUI is a separate crate (`crates/petweave-settings`, eframe/egui,
+MSRV 1.95). Its dependencies are vendored in `.cargo-home` like the rest, so
+the commands above still work offline; only adding a *new* crate needs network
+first. The host (`petweave`) must stay free of egui/eframe/winit.
 
 To verify rendering/loading without a compositor:
 
@@ -104,8 +112,9 @@ The config is a user contract; changes are near-irreversible once shipped.
   working (read as one pet with id `default`), `[[pets]]` wins if both exist,
   and `[render].physics` still selects `mode` when `mode` is empty. There are
   tests for all of this — keep them passing.
-- Surface size precedence is **pet's own preferred size → `[[pets]].width/height`
-  → `[render]`** (`petweave_core::pet::resolve_surface_size`). BongoCat's
+- Surface size precedence is **`[[pets]].width/height` → pet's own preferred
+  size → `[render]`** (`petweave_core::pet::resolve_surface_size`); one given
+  side derives the other from the artwork's aspect ratio. BongoCat's natural
   size comes from `cat_height`.
 - `Config::validate()` is the **single source of truth** for validation.
   The GUI must call it rather than re-implementing rules. Bounds live as

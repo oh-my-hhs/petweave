@@ -1577,7 +1577,11 @@ pub fn run(config: Config, config_path: Option<PathBuf>, cli: Cli) -> Result<()>
     let wayland_source = WaylandSource::new(app.wayland.conn.clone(), queue);
     wayland_source
         .insert(loop_handle.clone())
-        .context("failed to register Wayland source")?;
+        // `InsertError` is not `Send + Sync` when `wayland-backend`'s system
+        // backend is unified in (the settings GUI's winit dependency does
+        // that), so it cannot go through `anyhow::Context`'s bound. The
+        // message is all we need here anyway.
+        .map_err(|e| anyhow::anyhow!("failed to register Wayland source: {e}"))?;
 
     // Global input channel: reader threads -> host loop.
     let (tx, rx): (calloop::channel::Sender<Event>, Channel<Event>) = calloop::channel::channel();

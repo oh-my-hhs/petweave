@@ -61,7 +61,7 @@ Innovation.md 的差异化定位是：**从"更好的桌宠"进化为"让任何�
 
 ### 2.3 Shijima-Qt 的教训（已归档）
 
-**"Qt + Wayland Layer Shell 的结合充满 hack"** → 不要用重型 GUI 框架去适配 layer-shell。本框架核心**无 GUI 依赖**（渲染 = 自绘 SHM/wgpu 像素），设置界面独立于运行时（见 §4.10）。
+**"Qt + Wayland Layer Shell 的结合充满 hack"** → 不要用重型 GUI 框架去适配 layer-shell。本框架核心**无 GUI 依赖**（渲染 = 自绘 SHM/wgpu 像素），设置界面独立于运行时（独立进程，见 §4.10）。
 
 ---
 
@@ -215,7 +215,7 @@ my-pet.petweave (ZIP)
 
 ### 4.10 周边
 
-- **托盘/设置 UI**：托盘用 `ksni`（纯 Rust StatusNotifier）或 `tray-icon`；设置面板用 **egui**（进程内，需 GPU 或软渲染）或独立小 Web 面板（v2）——**不引入 GTK/Qt 运行时**。
+- **托盘/设置 UI**：托盘用 `ksni`（纯 Rust StatusNotifier）；设置面板是**独立进程** `petweave-settings`，用 **egui 0.37 + eframe 0.37**（glow/OpenGL 后端；MSRV 1.95，宿主保持 1.80）。不引入 GTK/Qt 运行时，也不把 egui 链进宿主。
 - **自启**：XDG autostart 条目 + systemd user service（`--user`，`Restart=on-failure`）。
 - **日志**：`tracing` + 文件环形缓冲；`petweave doctor` 收集诊断。
 - **打包**：Arch PKGBUILD、Nix flake（含 NixOS 模块，自动装 udev 规则）、AppImage/flatpak 评估（flatpak 需 portal 路径适配，放 v2）。

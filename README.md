@@ -13,6 +13,7 @@
 - 配置热重载、键盘热插拔、进程单例、优雅退出
 - 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植，SVG 睡眠帧）
 - **角色包**：`.petweave` 格式 + 声明式精灵宠物（零代码）+ **Lua 脚本宠物**（mlua 沙箱、气泡对话），工具链 `install/uninstall/list/package/import`
+- **图形设置界面**：独立进程 `petweave-settings`（egui/eframe），宠物列表 / 参数表单 / 保注释保存 / 控制通道实时生效；宿主仍零 GUI 依赖
 - **生态开放**：创建角色包 → [docs/PACKAGES.md](docs/PACKAGES.md)（从零教程）· 贡献与投稿 → [CONTRIBUTING.md](CONTRIBUTING.md)
 
 创新点说明见 [Innovation.md](Innovation.md) · 架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md) · 图形设置界面计划见 [docs/GUI_ROADMAP.md](docs/GUI_ROADMAP.md)
@@ -20,12 +21,16 @@
 ## 构建
 
 ```bash
-cargo build --release      # 产物: target/release/petweave
-cargo test                 # 运行测试（55 项）
+cargo build --release -p petweave           # 宿主: target/release/petweave（Rust 1.80+）
+cargo build --release -p petweave-settings  # 设置面板（Rust 1.95+）
+cargo test                                  # 全部测试（158 项；需要 1.95+ 才能编译 settings）
 ```
 
+GUI 依赖已随仓库的 `.cargo-home` vendored；在没有缓存的机器上首次构建需要联网下载，
+宿主本身仍可离线构建（`cargo build --offline -p petweave`）。
+
 ### 依赖
-- Rust 1.80+（stable）
+- Rust 1.80+（stable；设置面板 `petweave-settings` 需要 1.95+，见 `docs/GUI_ROADMAP.md` D8）
 - Wayland 合成器（支持 `wlr-layer-shell`）：niri / Hyprland / Sway / KWin(Plasma 6) 等
 - 键盘监听需要 `/dev/input` 权限（见下方「权限」）
 - 角色包的气泡文字需要系统字体（AdwaitaSans / DejaVuSans 等，缺失时只显示气泡不显示文字）
@@ -220,6 +225,26 @@ petweave control '{"id":1,"op":"ListPets"}'  # 控制通道：读取每只宠物
 | `petweave import <xpm> -o <png>` | Oneko 风格 XPM 精灵表 → PNG |
 | `petweave config migrate [--write] [-c PATH]` | 把旧 `[pet]` 单宠物配置改写成 `[[pets]]`（保留注释；`--write` 先备份 `.bak`） |
 | `petweave control '<JSON>' [--socket PATH]` | 向运行中的宿主控制通道发一条请求并打印响应（省略 JSON 时默认 `ListPets`；`-` 从 stdin 读） |
+| `petweave settings [-c PATH] [--socket PATH]` | 打开设置面板（独立进程 `petweave-settings`；找不到时给出构建/安装提示） |
+
+### 设置面板（图形界面）
+
+```bash
+cargo build -p petweave-settings       # 产物: target/debug/petweave-settings
+petweave settings                      # 或直接运行 ./target/debug/petweave-settings
+```
+
+设置面板是一个**独立进程**，宿主不链接任何 GUI 库；关闭面板不影响桌面上的宠物。
+功能（M3.5 G2）：
+
+- 宠物列表：启用/停用、上移/下移（顺序=叠放顺序）、复制、删除；从内置类型或已安装角色包添加。
+- 参数表单：名字/尺寸/锚点/边距/层级/移动模式/显示器/点击穿透；BongoCat 的猫高度、爪击保持、
+  睡眠窗口、镜像；demo 颜色；sprite/lua 的包选择。未写出的值显示「继承 [render]」并有「恢复默认」。
+- 保存并应用：`toml_edit` 逐键更新，**手写注释与键顺序保留**；原子写 + `.bak` + `0600`；
+  保存前调用 `Config::validate()`，失败不写盘；保存后通过控制通道立即 `Reload`。
+- 宿主离线时仍可编辑保存（下次启动生效）；配置文件被其他程序改动时拒绝覆盖并提示重新加载。
+
+布局画布/缩略图预览（G3）与诊断页（G4）尚未实现，路线见 [`docs/GUI_ROADMAP.md`](docs/GUI_ROADMAP.md)。
 
 ### 控制通道（设置界面前置）
 
@@ -366,7 +391,8 @@ PetWeave 的长期生命力来自**大家一起创作角色包**。三种参与�
 ```
 crates/
   petweave-core/   共享类型：config / events / manifest / Pet trait / render Frame
-  petweave/        主机：cli / app(事件循环) / package / platform / graphics / runtime
+  petweave/        主机：cli / app(事件循环) / package / platform（含 control.sock）/ graphics / runtime
+  petweave-settings/ 设置面板（独立二进制，egui/eframe；不进入宿主依赖）
 assets/bongocat/   内置 BongoCat 素材（PNG 帧 + sleeping SVG，MIT，署名见目录内 README）
 packages/          预置角色包：bongo-sprite（声明式 BongoCat）/ blinky（网格示例）/ lua-demo（Lua 示例）
                    / krill-pet、puro-pet（原图直用的按键桌宠：交替姿势 + 1/2/3 表情 + 上跳）

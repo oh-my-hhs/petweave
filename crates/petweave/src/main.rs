@@ -40,6 +40,9 @@ fn main() -> Result<()> {
         Some(Command::Control { json, socket }) => {
             return run_control_client(json.as_deref(), socket.clone())
         }
+        Some(Command::Settings { config, socket }) => {
+            return run_settings(config.as_deref(), socket.as_deref())
+        }
         Some(_) => return run_package_command(&cli.command, &cli),
         None => {}
     }
@@ -216,6 +219,52 @@ fn set_private_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("cannot set permissions on {}", path.display()))
+}
+
+// --- settings entry --------------------------------------------------------
+
+/// `petweave settings`: `exec` the same-directory `petweave-settings` binary
+/// (or one on `PATH`), forwarding `--config`/`--socket`.
+fn run_settings(config: Option<&Path>, socket: Option<&Path>) -> Result<()> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("petweave-settings"));
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            candidates.push(dir.join("petweave-settings"));
+        }
+    }
+    let Some(binary) = candidates.into_iter().find(|path| is_executable(path)) else {
+        bail!(
+            "petweave-settings not found next to petweave or on PATH\n\
+             build it with:  cargo build -p petweave-settings\n\
+             or install the petweave-settings package alongside petweave"
+        );
+    };
+    let mut command = std::process::Command::new(&binary);
+    if let Some(config) = config {
+        command.arg("--config").arg(config);
+    }
+    if let Some(socket) = socket {
+        command.arg("--socket").arg(socket);
+    }
+    use std::os::unix::process::CommandExt;
+    // `exec` replaces this process; it only returns on failure.
+    let error = command.exec();
+    Err(anyhow::anyhow!(
+        "cannot launch {}: {error}",
+        binary.display()
+    ))
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 // --- control client --------------------------------------------------------

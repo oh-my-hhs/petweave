@@ -1,0 +1,28 @@
+[package]
+name = "petweave-settings"
+version.workspace = true
+edition.workspace = true
+# D8: egui/eframe 0.37 needs 1.95; the host keeps the workspace MSRV (1.80).
+rust-version = "1.95"
+license.workspace = true
+description = "PetWeave settings panel (separate GUI process)"
+
+[[bin]]
+name = "petweave-settings"
+path = "src/main.rs"
+
+[dependencies]
+petweave.workspace = true
+petweave-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+toml_edit.workspace = true
+tracing-subscriber.workspace = true
+eframe.workspace = true
+egui.workspace = true
+fontdb.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+egui_kittest = "0.37.0"

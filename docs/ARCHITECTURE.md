@@ -22,7 +22,7 @@ PetWeave 是 **Wayland 原生的桌宠框架**（而非单一桌宠应用），�
 
 ## 2. 仓库结构
 
-Cargo workspace，两个 crate，边界就是"可复用契约"与"宿主实现"的分界：
+Cargo workspace，三个 crate，边界就是"可复用契约"、"宿主实现"与"独立 GUI 进程"的分界：
 
 ```
 petweave/
@@ -62,6 +62,15 @@ petweave/
 │           │   └── mod.rs
 │           ├── graphics/mod.rs  # Frame 转换、缩放、alpha bbox、SVG 栅格化
 │           └── package.rs       # .petweave 包：仓库、安装、打包、XPM 导入
+│   └── petweave-settings/    # 设置面板（独立二进制，依赖 egui/eframe；宿主不依赖它）
+│       └── src/
+│           ├── main.rs       # eframe::run_native + --config/--socket
+│           ├── app.rs        # SettingsApp：draft/baseline、页面路由、保存流程
+│           ├── store.rs      # toml_edit 逐键更新、原子写、迁移、外部修改检测
+│           ├── client.rs     # control.sock 非阻塞客户端（重连/握手/事件）
+│           ├── fonts.rs      # fontdb 注入 CJK 字体
+│           ├── i18n.rs       # 中文文案集中管理
+│           └── ui/           # pets / params / about 页面
 ├── packages/                 # 仓库自带示例角色包
 │   ├── bongo-sprite/         # 声明式 BongoCat（零代码）
 │   ├── blinky/               # 最小网格示例
@@ -545,6 +554,11 @@ sequenceDiagram
 channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` / 系统快照 /
 气泡状态（mlua 回调需要 `'static`）。
 
+设置面板是**独立进程**（`petweave-settings`，egui/eframe + winit 事件循环）：它与宿主
+不共享内存，只通过 `control.sock`（JSON Lines）读写；因此 GUI 崩溃/关闭不影响宠物，
+宿主依赖树里也没有 egui/eframe/winit（N01）。`petweave` 与 `petweave-settings` 的
+MSRV 分开声明（1.80 / 1.95，D8）。
+
 ---
 
 ## 11. 渲染与图形工具（graphics/）
@@ -575,7 +589,7 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
 
 ## 13. 测试
 
-`#[cfg(test)]` 单测随代码内联，共 **136 项**（宿主 98 + core 38），覆盖：
+`#[cfg(test)]` 单测随代码内联，共 **158 项**（宿主 98 + core 38 + settings 21 + kittest UI 1），覆盖：
 
 - core：配置解析/校验/默认值、MoveMode 解析、HH:MM 时钟解析、`Frame` 绘制与 alpha 合成、
   manifest 解析/校验、反应引用检查。
@@ -584,6 +598,9 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
   Sprite 网格切帧/反应切换、Lua 沙箱 `io` 拦截/死循环中止/气泡过期）。
 - 控制通道：golden 请求、未知 op/坏 JSON、响应与事件形状、协议版本、64 KiB 行上限、
   socket 权限（0700/0600）、端到端往返 + 事件广播 + 断连清理。
+- 设置面板：store 的注释保留/增删重排/继承删除/旧格式迁移/外部修改拒绝/原子写与权限、
+  client 的重连握手/版本不匹配/事件分发、app 的 id 生成与拷贝删除、`egui_kittest`
+  无头 UI 的"改字段 → 脏 → 保存 → 文件含注释"。
 
 `--preview <path>` 可脱离 Wayland 把宠物当前帧导出 PNG，便于调试与制作包封面。
 
@@ -615,7 +632,7 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
 | M1 BongoCat 移植 | ✅ | 爪击/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
 | M2 SDK / 角色包 | ✅ | `.petweave`、声明式精灵、Lua 沙箱、CLI、示例包、SVG 渲染 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存（G0）已完成；设置面板见 M3.5 |
-| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物运行时 ✅、G1 控制通道 ✅；G2 egui 设置面板待做 |
+| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物配置 ✅、G1 控制通道 ✅、G2 设置面板 MVP ✅；G3 布局画布/预览、G4 诊断/分发待做 |
 | M4 深度集成 | ⬜ 未开始 | GPU 后端、Live2D、外部进程协议、打包分发 |
 
 已知边界：
@@ -628,6 +645,7 @@ channel 投递消息。Lua 宠物内部用 `Arc<Mutex<...>>` 共享 `SpritePet` 
 - Lua 脚本变更需重启（不做进程内重新执行）；脚本 state 无持久化。
 - 全屏隐藏依赖合成器实现 `foreign-toplevel-management`（niri 未实现，优雅降级）。
 - CPU/SHM 渲染，暂无 GPU 路径与 Live2D。
+- 设置面板只带 `glow` 后端；`wgpu` 回退（N04）与布局画布/缩略图预览（G3）、诊断页（G4）待做。
 - 托盘依赖 `StatusNotifierWatcher`（无守护时保持等待，不报错）。
 
 ---

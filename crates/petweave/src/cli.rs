@@ -107,6 +107,15 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ConfigCommand,
     },
+    /// Open the settings panel (`petweave-settings`, a separate GUI process).
+    Settings {
+        /// Config file to edit (default: the standard config path).
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Control socket to use (default: $XDG_RUNTIME_DIR/petweave/control.sock).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
     /// Send one JSON Lines request to the running host's control socket.
     Control {
         /// Request JSON (default: ListPets; `-` reads it from stdin).

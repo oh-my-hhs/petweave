@@ -8,7 +8,7 @@
 > [TECH_STACK.md](TECH_STACK.md)（技术选型，§4.10 已预留 egui 设置面板）· [PACKAGES.md](PACKAGES.md)
 >
 > 状态图例：`✅ 完成` · `🔶 进行中` · `⬜ 未开始` · `⏸ 暂缓`
-> 版本：v0.3（G0/G1 已落地）· 最后更新：2026-10-18
+> 版本：v0.4（G0/G1/G2 已落地）· 最后更新：2026-10-18
 
 ---
 
@@ -48,6 +48,7 @@
 | D9 | 中文字体用 **`fontdb` 扫描系统字体**注入 egui | `fontdb` 已在依赖树（resvg→usvg→fontdb 0.23），零新增依赖即可拿到 Noto Sans CJK | 高 |
 | D10 | 宿主**不写配置**（唯一写者是 GUI 与 CLI 迁移命令） | 避免双向写导致的互相覆盖；宿主只读 + 热重载 | 高 |
 | D11 | 宠物实例用稳定 **`id`** 标识（而非数组下标） | 重命名/排序/多实例下，控制通道与 Lua storage 需要稳定键 | 中 |
+| D12 | G2 渲染后端先只开 **`glow`**；`wgpu` 回退延后到 G4 | eframe 0.37 的默认 feature 实际是 wgpu，编译单元与体积都大得多；glow 已覆盖 niri/主流 Mesa。N04 的 wgpu 回退在打包阶段补，协议/UI 不受影响 | 高：eframe feature 只影响 GUI crate |
 
 ---
 
@@ -103,9 +104,9 @@ flowchart LR
 
 | 依赖 | 版本（起点） | 用途 | 备注 |
 |---|---|---|---|
-| `eframe` | 0.37（MSRV 1.95） | 窗口 + 事件循环 + 渲染器 | 默认 `glow` 后端；同时开 `wgpu` feature 作为回退 |
+| `eframe` | 0.37（MSRV 1.95） | 窗口 + 事件循环 + 渲染器 | 0.37 的默认 feature 是 **wgpu**；本实现显式改用 `glow`（体积/编译时间小），wgpu 回退（N04）留到 G4 打包时再开 |
 | `egui` | 0.37 | 控件、布局、绘图 | 与 eframe 同版本锁定 |
-| `egui_extras` | 0.37 | 表格、`Image` 缩放 | 宠物列表需要 TableBuilder |
+| `egui_extras` | 0.37 | 表格、`Image` 缩放 | **G2 未引入**：宠物列表用 `egui::Grid` 已足够；需要表格/图片加载时再加 |
 | `fontdb` | 0.23 | 找系统中文字体 | 已在依赖树（不新增编译单元） |
 | `toml_edit` | 0.22 | 保注释的配置编辑 | 新增 |
 | `petweave-core` | path | `Config` / `Manifest` / `Frame` / 校验 | 单一事实来源 |
@@ -263,6 +264,8 @@ click_through = false
 4. 原子写：同目录 `petweave.toml.tmp-<pid>` → `fsync` → `rename`；旧文件先复制为 `petweave.toml.bak`（保留一份）。
 5. 文件权限 `0600`（配置里将来会有 AI key 等敏感项）。
 6. 写在 GUI 线程做（文件很小，<1ms 级），写完调用 `Reload` 加速生效（不依赖 300ms 去抖）。
+7. **三方合并（最小版）**：`Store` 记住加载/上次保存时的文件文本；保存前若磁盘内容已变，
+   拒绝写入并提示「配置文件已被其他程序修改」，GUI 提供「重新加载」而不是静默覆盖。
 
 ---
 
@@ -369,8 +372,8 @@ click_through = false
 |---|---|
 | **宠物列表** | TableBuilder：缩略图、名字、`kind`/包名、启用开关、位置摘要、复制/删除/排序（拖拽或上下按钮）；底部"+ 添加宠物"下拉（内置 demo/bongo + `package::list()` 结果 + 清空后的包管理入口） |
 | **参数** | 左侧三列分组表单：通用（名字/尺寸/帧率/点击穿透/移动模式/层级/显示器）、按 kind（bongo 睡眠与爪击；demo 颜色；sprite/lua 包与脚本）；每项带默认值提示（"继承自 [render]"）与"恢复默认"按钮 |
-| **布局** | 上半：按显示器分页的画布，画布上画输出矩形 + 每只宠物方块（贴真实 rect），可拖动、8px 吸附、边/中心线吸附、"放到底部居中"预设；下半：选中宠物的 anchor 复选 + 四边 margin 数值框，两边双向同步 |
-| **诊断** | 内嵌 `doctor`：会话/Wayland、layer-shell 可用性、输入权限与已发现设备、字体（是否找到 CJK）、包仓库路径、版本与协议号；`--apply` 类操作 v1 只显示命令不执行 |
+| **布局**（G3） | 上半：按显示器分页的画布，画布上画输出矩形 + 每只宠物方块（贴真实 rect），可拖动、8px 吸附、边/中心线吸附、"放到底部居中"预设；下半：选中宠物的 anchor 复选 + 四边 margin 数值框，两边双向同步。G2 先提供**等效表单**（anchor + 四边 margin 在参数页编辑） |
+| **诊断**（G4） | 内嵌 `doctor`：会话/Wayland、layer-shell 可用性、输入权限与已发现设备、字体（是否找到 CJK）、包仓库路径、版本与协议号；`--apply` 类操作 v1 只显示命令不执行 |
 | **关于** | 版本、配置文件路径、socket 路径、日志位置、`--validate-config` 结果、协议版本 |
 
 交互细节：
@@ -491,15 +494,25 @@ click_through = false
   `Hello protocol=99` 返回 `protocol_mismatch`，未知 op 返回 `unknown_op`，
   socket 实际权限为 `drwx------` + `srw-------`
 
-### G2 · 设置面板 MVP ⬜ 未开始
+### G2 · 设置面板 MVP ✅ 完成
 
-- [ ] `crates/petweave-settings` 骨架：eframe 窗口、侧栏路由、主题、CJK 字体注入（`fontdb`）
-- [ ] `store.rs`：`DocumentMut` 读写、原子写 + `.bak`、保存前校验、迁移旧格式
-- [ ] `client.rs`：连接/重连/握手/协议不匹配降级
-- [ ] 列表页（F10/F11）+ 参数页（F12/F13/F14）+ 保存并应用（F31/F32/F33/F34）
-- [ ] `petweave settings` 入口 + 缺二进制提示
-- [ ] UI 测试：`egui_kittest` 覆盖"改字段 → 脏 → 保存 → 文件内容含注释"
-- 验收：纯 GUI 完成"加一只 blinky 到左上角、改 BongoCat 高度、删掉 lua-demo"并立即在桌面看到结果
+- [x] `crates/petweave-settings` 骨架：eframe 窗口、`Panel` 侧栏路由、深浅色跟随、CJK 字体注入
+      （`fonts.rs` 用 `fontdb` 找 Noto/Source Han/WenQuanYi，失败时界面仍可用并提示）
+- [x] `store.rs`：`DocumentMut` 读写、**逐键更新保注释**、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、
+      保存前 `Config::validate` + 回读比对、旧 `[pet]` 自动迁移、外部修改检测
+- [x] `client.rs`：非阻塞 Unix socket、2s 重连、`Hello` 握手/协议不匹配降级、事件与快照解析
+- [x] 列表页（F10/F11：表格、启用/停用、上移/下移/复制/删除、内置类型 + 已安装包添加）
+      + 参数页（F12/F13/F14/F15：通用/按 kind 表单、继承提示与「恢复默认」、内联校验）
+      + 保存并应用（F31/F32/F33/F34：立即 `Reload`、原子写、断网可编辑、关 GUI 不影响宿主）
+- [x] `petweave settings` 入口（同目录或 PATH 查找 `petweave-settings`，缺失时给出构建/安装提示）
+- [x] UI 测试：`egui_kittest` 覆盖"改字段 → 脏 → 保存 → 文件内容含注释"（headless，无 GPU）
+- [x] 测试：settings 库 21 项（store 11 + client 4 + app 6）+ UI 1 项
+- 验收：✅ 设置在 niri 启动成功（窗口标题 `PetWeave 设置`、进程常驻）；
+  "加包/改高度/删除"由列表/参数页 + 保存路径实现，保存→注释保留→回读校验由 kittest 与 store 测试覆盖
+- 已知边界：
+  - 渲染后端仅 `glow`；`wgpu` 回退与 `--renderer` 放 G4（N04 暂未满足）。
+  - 布局画布/缩略图预览仍是 G3；诊断页仍是 G4。
+  - 完整手工验收（鼠标点选三只宠物）建议在真实桌面上再走一遍；自动化已覆盖同等路径。
 
 ### G3 · 布局画布与实时预览 ⬜ 未开始
 
@@ -533,7 +546,7 @@ click_through = false
 
 ```
 crates/petweave-settings/
-├── Cargo.toml            # rust-version = "1.95"，eframe/egui/egui_extras/fontdb/toml_edit
+├── Cargo.toml            # rust-version = "1.95"，eframe/egui/fontdb/toml_edit
 └── src/
     ├── main.rs           # 参数解析 + eframe::run_native
     ├── app.rs            # SettingsApp：页面状态、脏状态、保存流程
@@ -555,7 +568,7 @@ crates/petweave-settings/
 
 | 文件 | 改动 |
 |---|---|
-| `Cargo.toml` | workspace members 增加 `crates/petweave-settings`；`workspace.dependencies` 增加 eframe/egui/egui_extras/fontdb/toml_edit |
+| `Cargo.toml` | workspace members 增加 `crates/petweave-settings`；`workspace.dependencies` 增加 eframe/egui/fontdb/toml_edit |
 | `crates/petweave-core/src/config.rs` | `PetInstance`/`PetsConfig`/`resolve()`/扩展 `validate`/`default_config_path()` |
 | `crates/petweave-core/src/lib.rs` | re-export 新类型 |
 | `crates/petweave/src/lib.rs` | **新增**：`pub mod runtime; pub mod graphics; pub mod package;`（供 GUI 复用） |
@@ -577,7 +590,7 @@ crates/petweave-settings/
 | core 单测 | 迁移（`[pet]`→`[[pets]]`）、继承优先级、id 唯一、数量上限、margin 范围 | `cargo test -p petweave-core` |
 | 宿主单测 | placement 反算、增删重建、控制命令在主线程应用、socket 权限 | `cargo test -p petweave` |
 | 协议测试 | golden 请求/响应、未知 op、坏 JSON、超长行、协议不匹配、socket 权限、端到端往返 + 事件广播 + 断连（9 项） | `cargo test -p petweave --lib platform::control` |
-| GUI 测试 | `egui_kittest`：表单→脏→保存→文件内容（含注释保留）；校验阻断 | `cargo test -p petweave-settings` |
+| GUI 测试 | `egui_kittest`：表单→脏→保存→文件内容（含注释保留）；校验阻断；store 的增删/重排/迁移/外部修改/权限 | `cargo test -p petweave-settings` |
 | 手工矩阵 | niri（当前环境）/ Hyprland / Sway / KWin；单屏与双屏；scale 1.0/1.5/2.0；有/无 CJK 字体；GL 与 wgpu | 记录在 §14 |
 
 回归基线（每次里程碑末测）：宿主单宠物空闲 RSS、启动时间、二进制体积；GUI 冷启动时间、常驻 RSS（预期 <120MB，仅 GUI 运行时）。
@@ -625,16 +638,23 @@ crates/petweave-settings/
 |---|---|---|---|
 | G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试 | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
 | G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
-| G2 面板 MVP | ⬜ | 信息架构（§7） | 未写代码 |
+| G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 1 项 kittest、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
 | G3 布局/预览 | ⬜ | 交互约定（§7） | 未写代码 |
 | G4 诊断/分发 | ⬜ | — | — |
 | G5 打磨 | ⏸ | — | 视反馈启动 |
+
+**G2 资源基线**（本机 niri，release，`panic=abort` + LTO + strip）：
+
+| 产物 | 体积 | 常驻 RSS（实测） | 备注 |
+|---|---|---|---|
+| `petweave`（宿主） | **7.73 MiB**（8,110,000 B） | ≈14.9 MB（单 BongoCat，scale 2） | 宿主依赖树无 egui/eframe/winit（N01）；RSS 与旧文档 5.7MB 差异需要同环境复测（旧数据可能来自不同 scale/资产） |
+| `petweave-settings` | **12.39 MiB**（12,989,392 B） | ≈190 MB（软件 GL：ZINK 初始化失败后 Mesa 回退） | §11 的 "<120MB" 目标在真实 GPU 上待复核；GUI 只在打开时占用 |
 
 手工兼容性矩阵（每阶段末补测）：
 
 | 合成器 | 宿主多宠物 | 控制通道 | GUI 启动 | 画布定位 | 备注 |
 |---|---|---|---|---|---|
-| niri（当前） | ✅ | ✅ | ⬜ | ⬜ | 三宠物同屏 + 热增删已验证；G1 控制通道在两宠物下全 op 实测；设置窗口会被平铺，需文档给浮动规则 |
+| niri（当前） | ✅ | ✅ | ✅ | ⬜ | 三宠物同屏 + 热增删已验证；G1 控制通道在两宠物下全 op 实测；G2 设置在 niri 启动成功（窗口标题/进程验证），设置窗口会被平铺，需文档给浮动规则 |
 | Hyprland | ⬜ | ⬜ | ⬜ | ⬜ | — |
 | Sway | ⬜ | ⬜ | ⬜ | ⬜ | — |
 | KWin (Plasma 6) | ⬜ | ⬜ | ⬜ | ⬜ | — |
@@ -648,3 +668,4 @@ crates/petweave-settings/
 | 2026-10-17 | v0.1 | 初稿：确认 egui/eframe + 独立二进制、先多宠物、表单+画布双布局；建立 G0–G5 与需求/协议/配置草案 |
 | 2026-10-17 | v0.2 | **G0 落地**：配置 v2（`[[pets]]` + `[render]` 继承 + `[pet]` 兼容 + `config migrate`）、每宠物独立 surface/拖拽/物理/显隐、热增删（`ReloadOutcome`）、共享 `AssetCache`（Q1 定案）、多宠物托盘、`petweave` lib crate（D7 落地）；§5.2 第 4 条（尺寸优先级）按实现修订 |
 | 2026-10-18 | v0.3 | **G1 落地**：`platform/control.rs`（JSON Lines / 64 KiB 行上限 / 0700+0600）、主线程 `HostCommand::Control` 分发、§6.3 全部 op（`RenderPet` 延后，Q6 定案）与三类事件、`petweave control` 调试客户端、9 项协议测试 + niri 双宠物实机验收；宿主仍零 GUI 依赖（新增依赖仅 `serde_json`） |
+| 2026-10-18 | v0.4 | **G2 落地**：新增 `crates/petweave-settings`（eframe 0.37/egui 0.37，MSRV 1.95，glow）、`store.rs`（toml_edit 逐键更新保注释、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、回读校验、旧格式迁移、外部修改检测）、非阻塞 `client.rs`（重连/握手/版本降级）、宠物列表 + 参数表单 + 关于页、`petweave settings` 入口；21 项库测试 + 1 项 `egui_kittest`；宿主导出依赖树无 egui/eframe/winit（N01） |

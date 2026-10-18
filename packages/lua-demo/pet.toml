@@ -12,14 +12,18 @@ description = "Lua-scripted demo pet (speech + key reactions)"
 [pet]
 kind = "lua"
 script = "main.lua"
+# Surface box: the 10x10 cells are scaled proportionally into it (never
+# stretched). The script may change it at runtime with `pet.size(w, h)`;
+# a `[[pets]].width/height` in the user config overrides both (Q1A).
 surface_width = 64
 surface_height = 64
 
+# Six cells of 10x10 in one row (frames 4/5 repeat frame 3).
 [animations.idle]
 sheet = "sprites/blinky.png"
 cell_width = 10
 cell_height = 10
-frames = [0, 1, 2, 3]
+frames = [0, 1, 2, 3, 4, 5]
 fps = 4
 loop = true
 
@@ -27,7 +31,7 @@ loop = true
 sheet = "sprites/blinky.png"
 cell_width = 10
 cell_height = 10
-frames = [3]
+frames = [5]
 fps = 8
 
 [reactions]

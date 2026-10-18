@@ -484,6 +484,7 @@ mod tests {
                 surface_width: Some(64),
                 surface_height: Some(64),
                 script: "main.lua".into(),
+                ..PetDecl::default()
             },
             animations,
             reactions: Reactions {

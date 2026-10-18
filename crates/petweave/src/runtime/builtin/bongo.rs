@@ -80,11 +80,18 @@ fn local_minutes() -> u32 {
     (tm.tm_hour as u32) * 60 + tm.tm_min as u32
 }
 
+/// Scaled frames plus the size they were scaled to.
+type ScaledFrames = ((u32, u32), [Arc<Frame>; 5]);
+
 pub struct BongoPet {
     id: PetId,
     /// Shared decoded frames (see [`AssetCache`]): both-up, left-down,
     /// right-down, both-down, sleeping.
     frames: [Arc<Frame>; 5],
+    /// Frames scaled into the configured surface box (target size + frames).
+    /// `None` means the artwork is presented at its natural size. Kept per
+    /// instance (the shared [`AssetCache`] entries are natural-size only).
+    scaled: Option<ScaledFrames>,
     keypress_duration: Duration,
     mirror_x: bool,
     hand_mapping: bool,
@@ -135,6 +142,7 @@ impl BongoPet {
         Ok(Self {
             id: PetId(format!("bongo:{}", cfg.name)),
             frames,
+            scaled: None,
             keypress_duration: Duration::from_millis(b.keypress_duration_ms.max(1)),
             mirror_x: b.mirror_x,
             hand_mapping: b.hand_mapping,
@@ -270,10 +278,38 @@ impl Pet for BongoPet {
 
     fn render(&self, frame: &mut Frame) {
         frame.clear();
-        let img = &self.frames[self.frame_id() as usize];
+        let index = self.frame_id() as usize;
+        let img = match &self.scaled {
+            Some((_, scaled)) => &scaled[index],
+            None => &self.frames[index],
+        };
         let x = (frame.width as i32 - img.width as i32) / 2;
         let y = (frame.height as i32 - img.height as i32) / 2;
         frame.draw_image(x, y, img);
+    }
+
+    /// Scale the artwork proportionally into the configured surface box
+    /// (M2.7/Q1A: a `[[pets]].width/height` override is the box the pet gets,
+    /// never a stretch). Called by the runtime after load/reload/layout
+    /// changes; a no-op while the box matches the natural size.
+    fn resize_to(&mut self, width: u32, height: u32) {
+        let natural = &self.frames[0];
+        let natural_size = (natural.width.max(1), natural.height.max(1));
+        let target = petweave_core::pet::scale_to_fit(
+            natural_size,
+            (width.max(1), height.max(1)),
+        );
+        if target == natural_size {
+            self.scaled = None;
+            return;
+        }
+        if self.scaled.as_ref().is_some_and(|(size, _)| *size == target) {
+            return;
+        }
+        let scaled = self.frames.clone().map(|frame| {
+            Arc::new(crate::graphics::scale_frame(&frame, target.0, target.1))
+        });
+        self.scaled = Some((target, scaled));
     }
 
     fn tick(&mut self, _dt: f32) -> bool {
@@ -512,6 +548,43 @@ mod tests {
         pet.reload(&cfg2).expect("reload");
         let after = pet.preferred_size().unwrap();
         assert!(after.1 > before.1, "cat should grow: {before:?} -> {after:?}");
+    }
+
+    /// Q1A/M2.7: an explicit `[[pets]].width/height` box scales the artwork
+    ///; resizing only the surface would show the old cat in a bigger surface.
+    #[test]
+    fn configured_box_scales_the_artwork() {
+        let cfg = PetConfig {
+            kind: "bongo".to_string(),
+            ..PetConfig::default()
+        };
+        let mut pet = pet(&cfg);
+        let (w, h) = pet.preferred_size().unwrap();
+        let mut natural = Frame::new(w, h);
+        pet.render(&mut natural);
+        let natural_bbox = crate::graphics::alpha_bbox(&natural, 8).expect("content");
+
+        let box_size = (w * 2, h * 2);
+        pet.resize_to(box_size.0, box_size.1);
+        let mut big = Frame::new(box_size.0, box_size.1);
+        pet.render(&mut big);
+        let big_bbox = crate::graphics::alpha_bbox(&big, 8).expect("content");
+        assert!(
+            big_bbox.2 >= natural_bbox.2 * 2 - 4 && big_bbox.3 >= natural_bbox.3 * 2 - 4,
+            "artwork should scale with the box: {natural_bbox:?} -> {big_bbox:?}"
+        );
+
+        // Aspect is preserved for a non-proportional box: the content still
+        // fits inside it and does not stretch to the box height.
+        pet.resize_to(w * 2, h * 4);
+        let mut tall = Frame::new(w * 2, h * 4);
+        pet.render(&mut tall);
+        let tall_bbox = crate::graphics::alpha_bbox(&tall, 8).expect("content");
+        assert!(tall_bbox.2 <= w * 2 && tall_bbox.3 <= h * 4);
+        assert!(
+            tall_bbox.3 <= big_bbox.3 + 4,
+            "height must not stretch: {tall_bbox:?} vs {big_bbox:?}"
+        );
     }
 
     #[test]

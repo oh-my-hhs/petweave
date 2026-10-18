@@ -54,6 +54,9 @@ pub struct SettingsApp {
     pub close_confirm: bool,
     /// Set when the user chose "save and close" (or had no changes).
     pub allow_close: bool,
+    /// A save happened while the control socket was not connected; send
+    /// `Reload` as soon as the handshake completes (inotify is a fallback).
+    pub pending_reload: bool,
 }
 
 impl SettingsApp {
@@ -87,6 +90,7 @@ impl SettingsApp {
             font_note: String::new(),
             close_confirm: false,
             allow_close: false,
+            pending_reload: false,
         })
     }
 
@@ -162,14 +166,16 @@ impl SettingsApp {
                     .as_ref()
                     .map(|p| format!("（备份：{}）", p.display()))
                     .unwrap_or_default();
-                self.status = Some(format!(
-                    "{}：{}{}",
-                    Tr::SAVED,
-                    report.path.display(),
-                    backup
-                ));
-                // Do not wait for the 300ms inotify debounce (F31).
-                self.client.reload();
+                // Do not wait for the 300ms inotify debounce (F31). When the
+                // host is offline, say so instead of pretending it applied.
+                let notified = self.client.reload();
+                self.pending_reload = !notified;
+                let outcome = if notified {
+                    Tr::SAVED
+                } else {
+                    "已保存（宿主未连接：启动后或走热重载生效）"
+                };
+                self.status = Some(format!("{outcome}：{}{}", report.path.display(), backup));
             }
             Err(e) => {
                 self.error = Some(e.to_string());
@@ -284,6 +290,9 @@ impl SettingsApp {
 
     pub fn update_frame(&mut self, ctx: &egui::Context) {
         self.client.tick();
+        if self.pending_reload && self.client.can_control() && self.client.reload() {
+            self.pending_reload = false;
+        }
         // Poll while connecting/connected so events show up promptly; stay
         // asleep otherwise (no busy repaint loop).
         if matches!(

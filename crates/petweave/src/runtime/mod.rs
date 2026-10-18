@@ -45,7 +45,7 @@ impl Slot {
     }
 
     /// Surface size for the host, honouring the config override precedence
-    /// (pet preference → `[[pets]].width/height` → `[render]`).
+    /// (`[[pets]].width/height` → pet preference → `[render]`).
     pub fn surface_size(&self) -> (u32, u32) {
         let fallback = (self.pet.placement.width, self.pet.placement.height);
         self.instance.surface_size(
@@ -361,8 +361,12 @@ impl Runtime {
             if let Some(pos) = old.iter().position(|s| s.pet.id == pet.id) {
                 let mut slot = old.remove(pos);
                 let kind_changed = slot.pet.instance.kind != pet.instance.kind;
+                // A package change swaps the artwork/script behind the same
+                // kind; `Pet::reload` cannot do that (sprite/lua resolve their
+                // files in `new`), so rebuild the instance like a kind change.
+                let package_changed = slot.pet.instance.package != pet.instance.package;
                 let size_before = slot.surface_size();
-                if kind_changed {
+                if kind_changed || package_changed {
                     match self.load_slot(pet) {
                         Ok(fresh) => {
                             outcome.recreated.push(pet.id.clone());
@@ -375,16 +379,22 @@ impl Runtime {
                     }
                     continue;
                 }
-                if let Err(e) = slot.instance.reload(&pet.pet_config()) {
-                    tracing::warn!("pet {:?}: reload failed (keeping state): {e}", pet.id);
+                let config_changed = slot.pet.pet_config() != pet.pet_config();
+                if config_changed {
+                    if let Err(e) = slot.instance.reload(&pet.pet_config()) {
+                        tracing::warn!("pet {:?}: reload failed (keeping state): {e}", pet.id);
+                    }
                 }
                 slot.pet = pet.clone();
-                if slot.surface_size() != size_before {
-                    // Tell the pet about its new box (the artwork scales into
-                    // it) and resize the render frame: changing only the
-                    // frame would present the old pixels in a bigger surface.
-                    let (w, h) = slot.surface_size();
-                    slot.instance.resize_to(w, h);
+                let size_after = slot.surface_size();
+                if config_changed || size_after != size_before {
+                    // The artwork follows the box: after a reload the pet may
+                    // have rebuilt its media, and a size change must scale it
+                    // (resizing only the frame would present the old pixels in
+                    // a bigger surface).
+                    slot.instance.resize_to(size_after.0, size_after.1);
+                }
+                if size_after != size_before {
                     slot.fit_frame();
                     outcome.resized.push(pet.id.clone());
                 }
@@ -674,6 +684,55 @@ mod tests {
         });
         assert!(!rt.on_event_to("b", click.clone()));
         assert!(!rt.on_event_to("missing", click));
+    }
+
+    /// A `[[pets]].package` change must rebuild the instance: `Pet::reload`
+    /// cannot swap sprite/lua artwork, so before this the config said
+    /// `package = "bongo-sprite"` while the old package stayed on screen.
+    #[test]
+    fn apply_recreates_on_package_change() {
+        let one = |package: &str| {
+            cfg(&format!(
+                "[[pets]]\nid = \"s\"\nname = \"S\"\nkind = \"sprite\"\npackage = \"{package}\"\n"
+            ))
+        };
+        let mut rt = Runtime::new(&one("blinky"));
+        if !rt.load_errors().is_empty() {
+            eprintln!("skipping: packages not resolvable: {:?}", rt.load_errors());
+            return;
+        }
+        let before = rt.slots()[0].instance.preferred_size();
+        let out = rt.apply(&one("bongo-sprite"));
+        assert_eq!(out.recreated, ["s"], "package swap rebuilds the slot: {out:?}");
+        assert_eq!(rt.slots()[0].pet.instance.package, "bongo-sprite");
+        let after = rt.slots()[0].instance.preferred_size();
+        assert_ne!(before, after, "the new package's artwork is loaded");
+    }
+
+    /// Q1A: for a configured box the BongoCat artwork itself scales (not just
+    /// the transparent surface). A reload to a 2x box must double the content.
+    #[test]
+    fn configured_box_scales_bongo_artwork_on_reload() {
+        let assets = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/bongocat");
+        let at = |w: u32, h: u32| {
+            cfg(&format!(
+                "[[pets]]\nid = \"cat\"\nname = \"Cat\"\nkind = \"bongo\"\nwidth = {w}\nheight = {h}\n\
+                 [pets.bongo]\nassets_dir = \"{assets}\"\ncat_height = 110\n"
+            ))
+        };
+        let mut rt = Runtime::new(&at(132, 55));
+        assert!(rt.load_errors().is_empty(), "{:?}", rt.load_errors());
+        let small = rt.render_pet("cat").expect("cat").clone();
+        let small_box = crate::graphics::alpha_bbox(&small, 8).expect("content");
+
+        let out = rt.apply(&at(264, 110));
+        assert_eq!(out.resized, ["cat"]);
+        let big = rt.render_pet("cat").expect("cat").clone();
+        let big_box = crate::graphics::alpha_bbox(&big, 8).expect("content");
+        assert!(
+            big_box.2 >= small_box.2 * 2 - 4 && big_box.3 >= small_box.3 * 2 - 4,
+            "artwork should follow the configured box: {small_box:?} -> {big_box:?}"
+        );
     }
 
     /// G1 `SetSize`: a runtime-only box change resizes the pet instance and

@@ -106,7 +106,8 @@
       （详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G1）
 - [x] G2 设置面板 MVP：`crates/petweave-settings`（egui/eframe，MSRV 1.95，glow）+ 宠物列表/参数表单/关于页 +
       非阻塞控制通道 client + 原子保存（`toml_edit` 逐键更新保注释、`.bak`、0600、回读校验、旧格式迁移、外部修改检测）+
-      `petweave settings` 入口；21 项库测试 + 1 项 `egui_kittest`（详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G2）
+      `petweave settings` 入口；热重载：`kind`/`package` 自动重建、配置宽高等比缩放素材（含 BongoCat）；
+      21 项库测试 + 3 项集成测试（含 `egui_kittest`）（详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G2）
 - [ ] G3 布局画布与实时预览：按显示器分页拖拽定位（吸附）+ 缩略图/动画预览（复用 `Frame` 渲染）
       （G2 已提供 anchor + 四边 margin 的等效表单）
 - [ ] G4 诊断与分发：内嵌 `doctor`、托盘「设置…」、PKGBUILD/Nix 产物、README 章节

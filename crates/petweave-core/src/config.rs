@@ -577,17 +577,143 @@ impl ResolvedPet {
     }
 }
 
+/// Keys a user config may contain, per section. Used by
+/// [`unknown_keys`] to warn about typos (`surface_width` instead of
+/// `width`) instead of silently ignoring them.
+fn known_keys(section: &str) -> &'static [&'static str] {
+match section {
+    "" => &["general", "input", "render", "pet", "pets"],
+    "general" => &["fps", "log_level", "sysinfo_interval_secs", "tray_enabled"],
+    "input" => &["enabled", "auto_detect", "devices", "scan_interval_secs"],
+    "render" => &[
+        "width",
+        "height",
+        "layer",
+        "anchor",
+        "margin_top",
+        "margin_right",
+        "margin_bottom",
+        "margin_left",
+        "output",
+        "disable_fullscreen_hide",
+        "click_through",
+        "mode",
+        "physics",
+    ],
+    // `[pet]`, `[[pets]]` and `[[pets.<kind>]]` (bongo/demo keys).
+    _ => &[
+        "id",
+        "name",
+        "enabled",
+        "kind",
+        "package",
+        "color",
+        "width",
+        "height",
+        "layer",
+        "anchor",
+        "margin_top",
+        "margin_right",
+        "margin_bottom",
+        "margin_left",
+        "output",
+        "disable_fullscreen_hide",
+        "click_through",
+        "mode",
+        "move_mode",
+        "bongo",
+        "assets_dir",
+        "cat_height",
+        "keypress_duration_ms",
+        "hand_mapping",
+        "mirror_x",
+        "idle_sleep_timeout_secs",
+        "enable_scheduled_sleep",
+        "sleep_begin",
+        "sleep_end",
+    ],
+}
+}
+
+/// Names of keys in `text` that the config schema does not know, as
+/// `"section.key"` strings (e.g. `"pet.surface_width"`). Empty when the
+/// config only uses known keys (or is not valid TOML at all — the real
+/// parse reports that).
+///
+/// Unknown keys are not an error (forward compatibility: a newer config may
+/// carry keys an older binary ignores), but they are almost always typos, so
+/// `petweave doctor` and the config loader surface them.
+pub fn unknown_keys(text: &str) -> Vec<String> {
+fn walk(prefix: &str, table: &toml::value::Table, out: &mut Vec<String>, skip_below: &[&str]) {
+    let section = if prefix.is_empty() {
+        ""
+    } else if skip_below.iter().any(|s| prefix.ends_with(s)) {
+        // `[pet.bongo]` / `[pets.bongo]`: kind option tables.
+        "pet-kind"
+    } else {
+        prefix
+    };
+    let known = known_keys(section);
+    let mut unknown: Vec<String> = table.keys().filter(|k| !known.contains(&k.as_str())).cloned().collect();
+    unknown.sort();
+    for key in unknown {
+        out.push(if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") });
+        // An unknown table may still contain known-looking keys; walk it
+        // once with an empty whitelist so nested typos are reported too.
+        if let Some(toml::Value::Table(t)) = table.get(&key) {
+            walk(&format!("{prefix}.{key}"), t, out, skip_below);
+        }
+    }
+    // Recurse into the known tables of this section.
+    for key in known {
+        if let Some(toml::Value::Table(t)) = table.get(*key) {
+            let child = if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") };
+            walk(&child, t, out, skip_below);
+        }
+    }
+}
+
+let Ok(doc) = toml::from_str::<toml::Value>(text) else {
+    return Vec::new();
+};
+let Some(root) = doc.as_table() else {
+    return Vec::new();
+};
+let mut out = Vec::new();
+walk("", root, &mut out, &["bongo"]);
+// Arrays of tables (`[[pets]]`): check every element.
+if let Some(toml::Value::Array(items)) = root.get("pets") {
+    for (i, item) in items.iter().enumerate() {
+        if let Some(t) = item.as_table() {
+            walk(&format!("pets[{i}]"), t, &mut out, &["bongo"]);
+        }
+    }
+}
+out
+}
+
 impl Config {
     /// Load config from `path` (if given and readable), otherwise defaults.
     pub fn load(path: Option<&Path>) -> Result<Self, Error> {
+        let (cfg, _unknown) = Self::load_with_warnings(path)?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Like [`Config::load`] but also returns the keys the file sets that the
+    /// schema does not know (usually typos such as `surface_width` for
+    /// `width`). Unknown keys never fail the load (forward compatibility);
+    /// `petweave doctor` shows them and the host logs one warning line.
+    pub fn load_with_warnings(path: Option<&Path>) -> Result<(Self, Vec<String>), Error> {
         let mut cfg = Config::default();
+        let mut unknown = Vec::new();
         if let Some(p) = path {
             let text = std::fs::read_to_string(p)
                 .map_err(|e| Error::Config(format!("cannot read {}: {e}", p.display())))?;
             cfg = Config::parse(&text)?;
+            unknown = unknown_keys(&text);
         }
-        cfg.validate()?;
-        Ok(cfg)
+        Ok((cfg, unknown))
     }
 
     /// Parse config text (no validation; see [`Config::validate`]).
@@ -966,6 +1092,47 @@ mod tests {
         assert!(cfg.input.auto_detect);
         assert_eq!(cfg.pets.len(), 1, "one default pet");
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn unknown_keys_are_reported_not_fatal() {
+        // The classic typo: the manifest spelling in a user config.
+        let text = r#"
+            [pet]
+            kind = "lua"
+            package = "krill-pet"
+            surface_width = 896
+            surface_height = 560
+
+            [render]
+            anchor = "left|top"
+            margin_top = 500
+        "#;
+        let unknown = unknown_keys(text);
+        assert_eq!(unknown, vec!["pet.surface_height", "pet.surface_width"]);
+        // Still valid and parseable: unknown keys are forward compatible.
+        let cfg = Config::parse(text).expect("parse");
+        assert!(cfg.validate().is_ok());
+        // The real spelling is accepted.
+        let fixed = text.replace("surface_width", "width").replace("surface_height", "height");
+        assert!(unknown_keys(&fixed).is_empty());
+        // Arrays of tables are checked per element.
+        let multi = r#"
+            [[pets]]
+            id = "a"
+            kind = "demo"
+            widht = 100
+        "#;
+        assert_eq!(unknown_keys(multi), vec!["pets[0].widht"]);
+        // Kind option tables ([pets.bongo]) are whitelisted.
+        let bongo = r#"
+            [[pets]]
+            id = "b"
+            kind = "bongo"
+            [pets.bongo]
+            cat_height = 200
+        "#;
+        assert!(unknown_keys(bongo).is_empty());
     }
 
     #[test]

@@ -8,7 +8,7 @@
 > [TECH_STACK.md](TECH_STACK.md)（技术选型，§4.10 已预留 egui 设置面板）· [PACKAGES.md](PACKAGES.md)
 >
 > 状态图例：`✅ 完成` · `🔶 进行中` · `⬜ 未开始` · `⏸ 暂缓`
-> 版本：v0.4（G0/G1/G2 已落地）· 最后更新：2026-10-18
+> 版本：v0.6（G0/G1/G2 已落地）· 最后更新：2026-10-18
 
 ---
 
@@ -471,7 +471,7 @@ click_through = false
 - [x] 热重载：`Runtime::apply` 返回 `ReloadOutcome{added,removed,recreated,resized,updated}`；surface 按 diff 创建/销毁，换 `kind` 重建，改 `output` 重绑，纯参数原地 `apply_props`
 - [x] 资产缓存（Q1）：`runtime::assets::AssetCache` 以 `(path, w, h)` 为 key 共享 `Arc<Frame>`，同尺寸两只 BongoCat 只解码一次（实测 5 decoded / 5 hit），宠物移除后 `collect()` 回收
 - [x] 托盘：多宠物子菜单（每宠物显隐 + 移动模式）、全局「显示/隐藏全部」「移动模式（全部）」，标题随状态更新
-- [x] 测试：core 35 项（迁移/继承优先级/id 唯一/数量上限/margin 范围/`[pet]` 兼容/`[[pets]]` 胜出/`mode` 别名）+ 宿主 63 项（placement 反算 round-trip、多宠物装载/增删/换 kind/尺寸、独立物理、双 BongoCat 共享资产、托盘菜单）；共 **98 项全绿**
+- [x] 测试：core 35 项（迁移/继承优先级/id 唯一/数量上限/margin 范围/`[pet]` 兼容/`[[pets]]` 胜出/`mode` 别名）+ 宿主 63 项（placement 反算 round-trip、多宠物装载/增删/换 kind/尺寸、独立物理、双 BongoCat 共享资产、托盘菜单）；共 **98 项全绿**（G0 当时）
 - 验收：✅ 三宠物同屏（2×BongoCat + sprite）在 niri 实测：三块独立 SHM（scale 1.5 → 物理 ×2）、各自 anchor/click_through/mode；热重载 300ms 内完成增删/重建/重配置；旧 `[pet]` 配置零改动可跑并通过 `config migrate` 无损升级
 
 ### G1 · 控制通道 ✅ 完成
@@ -643,7 +643,7 @@ crates/petweave-settings/
 
 | 阶段 | 状态 | 已完成 | 备注 |
 |---|---|---|---|
-| G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试 | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
+| G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试（当时） | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
 | G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
 | G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 4 项集成测试（含 kittest）、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
 | G3 布局/预览 | ⬜ | 交互约定（§7） | 未写代码 |
@@ -675,6 +675,6 @@ crates/petweave-settings/
 | 2026-10-17 | v0.1 | 初稿：确认 egui/eframe + 独立二进制、先多宠物、表单+画布双布局；建立 G0–G5 与需求/协议/配置草案 |
 | 2026-10-17 | v0.2 | **G0 落地**：配置 v2（`[[pets]]` + `[render]` 继承 + `[pet]` 兼容 + `config migrate`）、每宠物独立 surface/拖拽/物理/显隐、热增删（`ReloadOutcome`）、共享 `AssetCache`（Q1 定案）、多宠物托盘、`petweave` lib crate（D7 落地）；§5.2 第 4 条（尺寸优先级）按实现修订 |
 | 2026-10-18 | v0.3 | **G1 落地**：`platform/control.rs`（JSON Lines / 64 KiB 行上限 / 0700+0600）、主线程 `HostCommand::Control` 分发、§6.3 全部 op（`RenderPet` 延后，Q6 定案）与三类事件、`petweave control` 调试客户端、9 项协议测试 + niri 双宠物实机验收；宿主仍零 GUI 依赖（新增依赖仅 `serde_json`） |
-| 2026-10-18 | v0.6 | **「继承」修复**：sprite/lua 把 layout box（`resize_to`）与固有尺寸（`preferred_size`）分开记录，删除 `width/height` 后回到包/脚本尺寸（此前 `SpritePet`/`LuaPet` 的 preferred 会被缩放后的 surface 覆盖，导致"点继承保存不变化"）；「继承」按钮加无障碍标签，新增 kittest 继承保存测试与 2 项宿主回归测试 |
-| 2026-10-18 | v0.5 | **G2 热重载修复**：`package` 变更重建实例（原实现只走 `Pet::reload`，sprite/lua 不会换包）；BongoCat 的配置宽高通过 `Pet::resize_to` 等比缩放素材（原实现只改 surface，猫的大小不变）；GUI 在宿主未连接时记住保存并补发 `Reload`，状态栏不再谎报"已通知"；新增 2 项 store→host 集成回归测试（尺寸/换包）与 1 项 Bongo 缩放单测 |
 | 2026-10-18 | v0.4 | **G2 落地**：新增 `crates/petweave-settings`（eframe 0.37/egui 0.37，MSRV 1.95，glow）、`store.rs`（toml_edit 逐键更新保注释、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、回读校验、旧格式迁移、外部修改检测）、非阻塞 `client.rs`（重连/握手/版本降级）、宠物列表 + 参数表单 + 关于页、`petweave settings` 入口；21 项库测试 + 4 项集成测试（含 `egui_kittest`）；宿主导出依赖树无 egui/eframe/winit（N01） |
+| 2026-10-18 | v0.5 | **G2 热重载修复**：`package` 变更重建实例（原实现只走 `Pet::reload`，sprite/lua 不会换包）；BongoCat 的配置宽高通过 `Pet::resize_to` 等比缩放素材（原实现只改 surface，猫的大小不变）；GUI 在宿主未连接时记住保存并补发 `Reload`，状态栏不再谎报"已通知"；新增 2 项 store→host 集成回归测试（尺寸/换包）与 1 项 Bongo 缩放单测 |
+| 2026-10-18 | v0.6 | **「继承」修复**：sprite/lua 把 layout box（`resize_to`）与固有尺寸（`preferred_size`）分开记录，删除 `width/height` 后回到包/脚本尺寸（此前 `SpritePet`/`LuaPet` 的 preferred 会被缩放后的 surface 覆盖，导致"点继承保存不变化"）；「继承」按钮加无障碍标签，新增 kittest 继承保存测试与 2 项宿主回归测试 |

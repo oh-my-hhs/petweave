@@ -8,7 +8,7 @@
   <sub>预置宠物：BongoCat 爪击（左）· blinky 网格宠物（中）· Lua 气泡宠物（右）</sub>
 </p>
 
-- 极轻量：实测空闲 RSS ≈ **5MB**、空闲 CPU ~0%（无 WebView/GTK/Qt 运行时）
+- 极轻量：空闲 CPU ~0%；release 单 BongoCat 实测 RSS ≈**15MB**（本机 niri/scale 2，见 ROADMAP「G2 体积/内存基线」；无 WebView/GTK/Qt 运行时，旧 5MB 基线待同环境复测）
 - 原生 Wayland（`wlr-layer-shell`）：定位、全屏自动隐藏、多显示器、HiDPI
 - 配置热重载、键盘热插拔、进程单例、优雅退出
 - 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植，SVG 睡眠帧）
@@ -43,6 +43,7 @@ GUI 依赖已随仓库的 `.cargo-home` vendored；在没有缓存的机器上�
 ./target/release/petweave                          # 启动 demo 宠物（默认配置）
 ./target/release/petweave --pet bongo              # 启动 BongoCat
 ./target/release/petweave -c ~/.config/petweave/petweave.toml
+petweave settings                  # 图形设置面板（独立进程，需先构建 petweave-settings）
 ```
 
 启动后宠物显示在屏幕底部（默认 anchor=bottom，margin 16px）。**BongoCat 会在你按键时击打对应爪子**——按键盘左侧的键（A/W/Q/…）动左爪，右侧（L/;/Space/…）动右爪，同时按则双爪齐下。
@@ -194,6 +195,7 @@ petweave list-devices             # 识别键盘设备
 petweave doctor                    # 环境体检（配置/会话/权限）
 petweave import oneko.xpm -o oneko.png   # Oneko 的 XPM 精灵表 → PNG
 petweave control '{"id":1,"op":"ListPets"}'  # 控制通道：读取每只宠物真实位置/尺寸
+petweave settings                  # 打开图形设置面板
 ```
 
 ### 命令行参数
@@ -365,8 +367,8 @@ PetWeave 的长期生命力来自**大家一起创作角色包**。三种参与�
 
 ### 行为说明
 
-- **多宠物**：`[[pets]]` 里每只宠物都有独立 surface、位置、移动模式、点击穿透与显隐；配置改动时自动增删（surface 创建/销毁）、换 `kind`（重建该宠物）或改 `output`（重建该 surface），均无需重启。同角色/同尺寸的宠物共享解码后的素材帧。
-- **热重载**：改 `[render]` / `[[pets]]` 的位置、尺寸与参数即时生效（bongo 改 `cat_height` 会重新缩放）；配置写错时保留旧配置并报错。
+- **多宠物**：`[[pets]]` 里每只宠物都有独立 surface、位置、移动模式、点击穿透与显隐；配置改动时自动增删（surface 创建/销毁）、换 `kind` 或**角色包 `package`**（重建该宠物）、改 `output`（重建/重绑 surface），均无需重启。同角色/同尺寸的宠物共享解码后的素材帧。
+- **热重载**：改 `[render]` / `[[pets]]` 的位置、尺寸与参数即时生效；改 `width/height` 会把素材等比缩放进新盒子（BongoCat 也是），删除这两个键（GUI「继承」）会回到宠物固有尺寸；bongo 改 `cat_height` 会重新缩放。配置写错时保留旧配置并报错。
 - **睡眠**：`idle_sleep_timeout_secs` 到期或处于定时窗口时显示"睡着"的猫（官方 SVG 素材栅格化）；定时睡眠期间按键被忽略，闲置睡眠按键即可唤醒。
 - **全屏隐藏**：检测到（激活的）全屏窗口时自动隐藏宠物（按宠物判定，`layer = "overlay"` 或 `disable_fullscreen_hide = true` 的宠物会保持显示）。注意：niri 未实现 `wlr-foreign-toplevel-management`，此功能在其上不生效（优雅降级，始终显示）。
 - **托盘**：注册 StatusNotifierItem（需要桌面环境/面板提供 StatusNotifierWatcher）；左键切换全部宠物显示/隐藏；菜单里可单独显隐某只宠物、分别设置每只的移动模式，或统一设置"移动模式（全部）"；无 Watcher 时优雅跳过。
@@ -387,6 +389,8 @@ PetWeave 的长期生命力来自**大家一起创作角色包**。三种参与�
 | 提示 `another petweave instance is already running` | 已有一个实例在运行（或 `$XDG_RUNTIME_DIR` 异常） |
 | 启动报 `wlr-layer-shell not available` | 当前合成器不支持 layer-shell（如 GNOME/Mutter），见兼容性说明 |
 | 找不到猫素材 | 在仓库根目录运行，或把 `assets/bongocat` 复制到运行目录并配置 `assets_dir` |
+| 在 `petweave-settings` 里保存后桌面没变化 | 看顶栏是否「已连接」；确认 `petweave-settings -c` 与宿主 `-c` 指向**同一个**配置文件；宿主要用修复后的版本重启过（G2 修复了换包/改宽高/继承的热重载）。宿主日志应出现 `config file changed — reloading` 或控制通道 `reload` |
+| 改角色包 / 宽高 / 点「继承」后仍需重启 | 确认宿主与设置面板都已重新编译（`cargo build --release -p petweave -p petweave-settings`）；GUI 状态栏若提示「宿主未连接」，保存会等连接后补发重载 |
 
 ## 项目结构
 

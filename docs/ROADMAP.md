@@ -1,7 +1,7 @@
 # PetWeave 功能实现计划表
 
 > 依据 `docs/TECH_STACK.md` 的里程碑划分。`- [x]` 表示已完成，`- [ ]` 表示未完成。
-> 更新日期：2026-10-18（M3 完成；M3.5 进行中，G0/G1 已落地，详见 `docs/GUI_ROADMAP.md`）
+> 更新日期：2026-10-18（M3 完成；M3.5 进行中，G0/G1/G2 已落地，详见 `docs/GUI_ROADMAP.md`）
 
 ## 当前状态
 
@@ -13,7 +13,7 @@
 | M2.5 可配置按键/图案 | ⏳ 规划 | 包声明配置项 + 改 config 生效（见下） |
 | M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS`；两个参考包端到端测试通过 |
 | M2.7 尺寸与摆放契约（GUI 前置） | ✅ 完成 | 尺寸优先级 `[[pets]]` > 宠物 > `[render]`、等比缩放不拉伸、删除 anchor/bob、`pet.offset(dx,dy)` + `padding`；`Pet::resize_to` / `Runtime::fit_frames` 让配置尺寸真正缩放内容 |
-| M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存（设置面板移交 M3.5） |
+| M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存；设置面板由 M3.5 G2 完成 |
 | M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物配置 ✅、G1 控制通道 ✅、G2 设置面板 MVP ✅（`petweave-settings`，独立进程）；G3 布局画布/预览、G4 诊断/分发待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
@@ -44,7 +44,7 @@
       双爪并发、按键保持时长（`keypress_duration_ms`）、`mirror_x`
 - [x] 动画驱动与空闲休眠：`Pet::tick` + `next_deadline` 自适应睡眠（空闲阻塞
       在 poll，~0% CPU）
-- [x] 资源指标基线：单宠物 RSS ≈ **5.7MB**（niri，release，264×110 surface）
+- [x] 资源指标基线：单宠物 RSS ≈ **5.7MB**（niri，release，264×110 surface；G2 同机复测约 **14.9MB**，环境/资产不同，见文末基线）
 - [x] 键盘热插拔：5s 快速重试 → 30s 周期扫描（`input.rs` 管理器线程），
       设备过滤（字母键集合校验，排除音频/媒体按键设备）
 - [x] 全屏自动隐藏：`wlr-foreign-toplevel-management`（activated+fullscreen
@@ -89,7 +89,7 @@
       （配置 v2 `[[pets]]`、每宠物独立 surface/拖拽/物理/显隐、运行中增删、轻量资产缓存）
 - [x] 点击穿透：`wl_surface.set_input_region` 按 alpha 包围盒收窄（`click_through` 可关）
 - [x] 托盘图标（ksni，StatusNotifierItem：左键显隐、菜单退出，`tray_enabled` 可关）
-- [ ] 设置面板（egui，独立进程）—— 移交 M3.5
+- [x] 设置面板（egui，独立进程）—— 由 M3.5 G2 完成（`petweave-settings`）
 
 ## M3.5 图形设置界面（GUI）
 
@@ -111,8 +111,10 @@
 - [ ] G3 布局画布与实时预览：按显示器分页拖拽定位（吸附）+ 缩略图/动画预览（复用 `Frame` 渲染）
       （G2 已提供 anchor + 四边 margin 的等效表单）
 - [ ] G4 诊断与分发：内嵌 `doctor`、托盘「设置…」、PKGBUILD/Nix 产物、README 章节
-- [ ] 入口：`petweave settings`（exec 同目录 `petweave-settings`）+ 托盘菜单 + 独立二进制
-- 验收：不手写 TOML，纯 GUI 完成"三只宠物同屏、各自定位、改 BongoCat 高度并在桌面立即生效"
+- [x] 入口：`petweave settings`（exec 同目录/`PATH` 的 `petweave-settings`）+ 独立二进制（缺失时给出构建/安装提示）
+- [ ] 托盘「设置…」入口（G4）
+- 验收：不手写 TOML，纯 GUI 完成"三只宠物同屏、各自定位、改 BongoCat 高度并在桌面立即生效"——
+      G2 已支持列表增删/复制/排序、anchor+margin 表单、尺寸/参数保存并即时生效；G3 的画布与缩略图预览完成后补齐视觉验收
 
 ## M4 深度集成
 
@@ -243,6 +245,7 @@
   （HiDPI scale 1.5 → 物理 ×2）、独立 anchor/margin/click_through/移动模式；热重载 300ms 去抖内
   完成增删（surface 创建/销毁）、换 kind（重建）、改尺寸（重配置）。共享资产缓存使同尺寸的两只
   BongoCat 只解码一次（`hits`/`decoded` 见 `runtime … asset cache` 日志），Q1 结论为**按 key 引用计数共享**。
+- **G2 热重载语义（已修复）**：`kind`/`package` 变更自动重建宠物实例；`width/height` 变更把素材等比缩放进盒子（BongoCat 也生效）；删除 `width/height`（GUI「继承」）回到宠物固有尺寸；`output` 变更重建/重绑 surface；其余参数原地应用。GUI 未连接宿主时保存会在握手后补发 `Reload`。
 - **G2 体积/内存基线**：release 下 `petweave` **7.73MiB**、`petweave-settings` **12.39MiB**；
   GUI 常驻 RSS ≈190MB（Mesa 软件 GL 回退，真实 GPU 待复测），宿主单 BongoCat（scale 2）≈14.9MB。
   宿主依赖树仍无 egui/eframe/winit（N01）。

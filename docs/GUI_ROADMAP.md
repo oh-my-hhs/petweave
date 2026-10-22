@@ -8,7 +8,7 @@
 > [TECH_STACK.md](TECH_STACK.md)（技术选型，§4.10 已预留 egui 设置面板）· [PACKAGES.md](PACKAGES.md)
 >
 > 状态图例：`✅ 完成` · `🔶 进行中` · `⬜ 未开始` · `⏸ 暂缓`
-> 版本：v0.6（G0/G1/G2 已落地）· 最后更新：2026-10-18
+> 版本：v0.7（G0/G1/G2/G3 已落地；G3 待桌面实测）· 最后更新：2026-10-22
 
 ---
 
@@ -109,6 +109,7 @@ flowchart LR
 | `egui_extras` | 0.37 | 表格、`Image` 缩放 | **G2 未引入**：宠物列表用 `egui::Grid` 已足够；需要表格/图片加载时再加 |
 | `fontdb` | 0.23 | 找系统中文字体 | 已在依赖树（不新增编译单元） |
 | `toml_edit` | 0.22 | 保注释的配置编辑 | 新增 |
+| `petweave`（宿主 lib） | path | `runtime`/`graphics`/`package`/`platform::control` | D7：预览与协议复用同一份代码；代价是 GUI 二元体积（G3 实测 15.03 MiB） |
 | `petweave-core` | path | `Config` / `Manifest` / `Frame` / 校验 | 单一事实来源 |
 | `serde` / `serde_json` | workspace | 控制协议报文 | 复用现有版本 |
 | `anyhow` / `tracing` | workspace | 错误与日志 | 复用 |
@@ -372,7 +373,7 @@ click_through = false
 |---|---|
 | **宠物列表** | TableBuilder：缩略图、名字、`kind`/包名、启用开关、位置摘要、复制/删除/排序（拖拽或上下按钮）；底部"+ 添加宠物"下拉（内置 demo/bongo + `package::list()` 结果 + 清空后的包管理入口） |
 | **参数** | 左侧三列分组表单：通用（名字/尺寸/帧率/点击穿透/移动模式/层级/显示器）、按 kind（bongo 睡眠与爪击；demo 颜色；sprite/lua 包与脚本）；每项带默认值提示（"继承自 [render]"）与"恢复默认"按钮 |
-| **布局**（G3） | 上半：按显示器分页的画布，画布上画输出矩形 + 每只宠物方块（贴真实 rect），可拖动、8px 吸附、边/中心线吸附、"放到底部居中"预设；下半：选中宠物的 anchor 复选 + 四边 margin 数值框，两边双向同步。G2 先提供**等效表单**（anchor + 四边 margin 在参数页编辑） |
+| **布局**（G3 ✅） | 上半：按显示器分页的画布，画布上画输出矩形 + 每只宠物（贴真实 rect，画宠物自身缩略图），可拖动、8px 吸附、边/中心线吸附；下半：选中宠物的 anchor 复选 + 四边 margin 数值框，两边双向同步，含「放到底部居中」「恢复默认位置」预设 |
 | **诊断**（G4） | 内嵌 `doctor`：会话/Wayland、layer-shell 可用性、输入权限与已发现设备、字体（是否找到 CJK）、包仓库路径、版本与协议号；`--apply` 类操作 v1 只显示命令不执行 |
 | **关于** | 版本、配置文件路径、socket 路径、日志位置、`--validate-config` 结果、协议版本 |
 
@@ -382,7 +383,9 @@ click_through = false
 - **保存并应用** → §5.5 写盘 → `Reload` → 等 `PetsChanged` → 清脏状态；失败保留脏状态并显示错误。
 - **画布拖拽** → 立刻 `SetPlacement`（响应里带新 `rect`，即时反馈）→ 松手写配置（持久化）。
   用户直接拖动桌面宠物、物理落定等宿主侧位移由 `PetMoved` 事件回流，避免 GUI 与真实位置漂移。
-- **预览**：列表缩略图懒加载（选中/可见时 10fps 刷新）；参数页右上角 320×320 动画预览；两者都走 `runtime` + `Frame` → `ColorImage`，并缓存纹理（键：pet id + 尺寸 + 帧序号）。
+- **预览**（G3 ✅）：列表缩略图 + 参数页右上角动画预览 + 画布上的宠物图；都走 `runtime` + `Frame` → `ColorImage`（D7），
+  约 10fps（`PREVIEW_INTERVAL`），且只有显示预览的页签才跑；纹理按 `(pet id, 像素上限, 帧序号)` 缓存，
+  `Runtime` 只在 kind/包/尺寸/颜色等"会改变像素"的字段变化时重建（改名字不重建）。
 - **字体与主题**：跟随系统深浅色；`fontdb` 优先匹配 `Noto Sans CJK SC` → `Source Han Sans` → `WenQuanYi`；找不到时界面仍可用但提示"中文显示可能异常"。
 - **HiDPI**：`ViewportBuilder::with_title` + 由 eframe 自动处理 `pixels_per_point`；画布坐标一律用**逻辑像素**，与宿主 margin 语义一致。
 
@@ -521,15 +524,31 @@ click_through = false
   - 布局画布/缩略图预览仍是 G3；诊断页仍是 G4。
   - 完整手工验收（鼠标点选三只宠物）建议在真实桌面上再走一遍；自动化已覆盖同等路径。
 
-### G3 · 布局画布与实时预览 ⬜ 未开始
+### G3 · 布局画布与实时预览 ✅ 完成（桌面实测待下一轮）
 
-- [ ] 画布页：显示器分页、输出矩形、宠物方块、拖拽 + 吸附（F20–F24）
-- [ ] 拖拽实时 `SetPlacement`，落定写配置；`PetMoved` 事件回流
-- [ ] 列表缩略图 + 参数页动画预览（F30），纹理缓存与 fps 节流
-- [ ] 显示器热插拔后重建画布
-- 验收：仅用鼠标把三只宠物摆成"左中右"，配置与桌面一致；预览与桌面同帧
+- [x] `canvas.rs`：**纯函数**几何层 —— `CanvasMap`（输出逻辑像素 ↔ 画布屏幕像素，等比 letterbox 且可逆）、
+      `snap_axis`/`snap_move`（8px 网格 + 显示器左/右/上/下边 + 中心线，阈值 6px；边/中心优先于网格）、
+      `pet_rect`（anchor+margin → rect，复用 `petweave_core::placement::surface_position`）、
+      `placement_at`/`apply_position`（拖拽结果 → 角化 anchor + 只写"能生效的那条边"的 margin）、
+      `apply_bottom_center`/`clear_placement`（F24 预设，只写必要键）、`hit_test`（按叠放顺序取最上层）、
+      `output_pages`（按 x/y 排序 + 离线时用 1920×1080 示意页）
+- [x] 画布页 `ui/layout.rs`：显示器下拉分页（`ListOutputs`）、输出矩形 + 100px 标尺 + 中心线、
+      每只宠物画自身缩略图 + 名字，选中高亮、禁用宠物淡显；拖拽时画吸附参考线
+- [x] 拖拽实时 `SetPlacement`（同一位置不重复发）+ 松手写 draft（保存即落盘，D10）；
+      `PetMoved`/`PetsChanged` 事件回流更新画布；布局页每 2s 刷新一次 `ListPets`/`ListOutputs`
+- [x] 显示器热插拔：页数变化时 `clamp_page` 校正当前页；拔掉的显示器上的宠物回落到第一页（`page_for_pet`）
+- [x] 表单与画布双向同步：anchor 四边复选 + 四边 margin（沿用「继承 [render]」按钮），改动即推 `SetPlacement`
+- [x] 列表缩略图 + 参数页动画预览（F30），纹理缓存 + 10fps 节流；`PreviewCache` 只在渲染输入变化时重建
+      `Runtime`（`preview_key` 覆盖 kind/包/颜色/尺寸/bongo 参数）
+- [x] 预览失败不静默：`PreviewCache::load_errors` 在列表页给计数、在「关于」页给原因
+- [x] 测试：canvas 6 项 + preview 4 项 + client（`SetPlacement` 发送/断线丢弃）2 项 = 设置库 **34 项**；
+      集成 **13 项**（store→host 2、`egui_kittest` 保存/继承 2、G3 `ui_layout` 6、脚本宿主 `layout_host` 1）
+- 验收（**已自动验证**）：拖拽→保存后 `pet_rect` 与拖拽落点误差 <0.5px；预设只写必要键；
+  脚本宿主下画布按 `output` 分页并显示宿主上报的真实 rect；`SetPlacement` 报文内容正确
+- 验收（**待桌面**，见 `docs/VERIFY_M3.5-G3.md`）：仅用鼠标把三只宠物摆成"左中右"，桌面与画布一致；
+  拖动时宠物跟手且吸附线可见；缩略图与桌面同帧
 
-### G4 · 诊断与分发 ⬜ 未开始
+### G4 · 诊断与分发 ⬜ 未开始（下一步）
 
 - [ ] 诊断页（F40），复用 `doctor` 逻辑（把它从 `main.rs` 抽成可复用模块）
 - [ ] 托盘「设置…」（F41）
@@ -597,7 +616,8 @@ crates/petweave-settings/
 | core 单测 | 迁移（`[pet]`→`[[pets]]`）、继承优先级、id 唯一、数量上限、margin 范围 | `cargo test -p petweave-core` |
 | 宿主单测 | placement 反算、增删重建、控制命令在主线程应用、socket 权限 | `cargo test -p petweave` |
 | 协议测试 | golden 请求/响应、未知 op、坏 JSON、超长行、协议不匹配、socket 权限、端到端往返 + 事件广播 + 断连（9 项） | `cargo test -p petweave --lib platform::control` |
-| GUI 测试 | `egui_kittest`：表单→脏→保存→文件内容（含注释保留）；校验阻断；store 的增删/重排/迁移/外部修改/权限 | `cargo test -p petweave-settings` |
+| GUI 测试 | `egui_kittest`：表单→脏→保存→文件内容（含注释保留）；校验阻断；布局页预设/吸附开关/画布分页；store 的增删/重排/迁移/外部修改/权限 | `cargo test -p petweave-settings` |
+| G3 几何单测 | `CanvasMap` 可逆映射、吸附优先级与钳制、anchor 往返、预设只写必要键、命中测试、显示器分页与回退、缩略图降采样（预乘 alpha 不产生黑边） | `cargo test -p petweave-settings --lib canvas:: preview::` |
 | 手工矩阵 | niri（当前环境）/ Hyprland / Sway / KWin；单屏与双屏；scale 1.0/1.5/2.0；有/无 CJK 字体；GL 与 wgpu | 记录在 §14 |
 
 回归基线（每次里程碑末测）：宿主单宠物空闲 RSS、启动时间、二进制体积；GUI 冷启动时间、常驻 RSS（预期 <120MB，仅 GUI 运行时）。
@@ -628,7 +648,7 @@ crates/petweave-settings/
 | Q2 | 宠物 `id` 是否允许用户重命名？重命名后 Lua `storage` 键如何迁移？ | 待定；v1 只允许改 `name`，`id` 只读 | 需要产品判断 |
 | Q3 | 画布是否需要"按工作区显示"的 per-pet 开关？ | 依赖 `ext-workspace` 协议，暂不做 | M4 再议 |
 | Q4 | 是否需要"布局预设/主题"（一键切换多套摆放）？ | 待定，倾向 G5 | 用户反馈 |
-| Q5 | 缩略图是否落盘缓存到 `$XDG_CACHE_HOME/petweave/thumbs`？ | 倾向不落盘（每次启动重渲染，成本极低） | 实现时决定 |
+| Q5 | 缩略图是否落盘缓存到 `$XDG_CACHE_HOME/petweave/thumbs`？ | **已定：不落盘。** 只在内存里缓存 egui 纹理（键 `(pet id, 像素上限, 帧序号)`），`Runtime` 重建时整体丢弃；预览成本 ≈ 一次 `tick_all` + 一次降采样 | ✅ G3 决定 |
 | Q6 | `RenderPet` 兜底接口是否保留？GUI 能本地加载所有内置 kind 时可能多余 | **已定：暂不实现。** G1 返回 `unsupported` 且 `caps.preview=false`；GUI 按 D7 本地渲染预览。若 G2 发现某些包无法在 GUI 侧加载，再回头实现 | ✅ G1 决定 |
 | Q7 | 是否需要 GUI 常驻托盘（关闭窗口后后台）？ | 倾向不需要（宿主已有托盘） | 用户反馈 |
 | Q8 | 诊断页的"一键修复"（`doctor --apply`）是否允许在 GUI 内提权？ | 倾向只显示命令 + 复制按钮 | 安全评审 |
@@ -646,9 +666,19 @@ crates/petweave-settings/
 | G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试（当时） | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
 | G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
 | G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 4 项集成测试（含 kittest）、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
-| G3 布局/预览 | ⬜ | 交互约定（§7） | 未写代码 |
-| G4 诊断/分发 | ⬜ | — | — |
+| G3 布局/预览 | ✅（待桌面实测） | `canvas.rs` 纯几何（映射/吸附/anchor 往返）、布局页画布 + 拖拽 + 预设 + 双向表单、列表缩略图 + 参数页动画预览、显示器热插拔重建、13 项集成 + 10 项几何单测；桌面验收清单见 `docs/VERIFY_M3.5-G3.md` | 无 GPU/无合成器下全部自动化；视觉验收（跟手、吸附线、颜色）留待下一轮 |
+| G4 诊断/分发 | ⬜ | — | 下一步：诊断页（F40）+ 托盘「设置…」+ 打包 |
 | G5 打磨 | ⏸ | — | 视反馈启动 |
+
+**G3 资源基线**（本机，release，`panic=abort` + LTO + strip，2026-10-22 构建）：
+
+| 产物 | 体积 | 变化 | 说明 |
+|---|---|---|---|
+| `petweave`（宿主） | **8.01 MiB**（8,399,768 B） | 相对 G2 记录 +0.28 MiB | 本轮宿主**零改动**；差额来自 G2 之后的两个修复提交（`fix(size)` / `fix(reload)`），不是 G3 引入 |
+| `petweave-settings` | **15.03 MiB**（15,761,152 B） | +2.64 MiB | D7 的代价：预览要在 GUI 侧调用 `petweave::runtime`，于是 resvg/mlua/image/bongo 进入 GUI 二元（宿主侧不受影响） |
+
+宿主依赖树仍无 egui/eframe/winit（N01 满足，`cargo tree -p petweave | grep -Ei 'egui|eframe|gtk|winit'` 无输出）。
+GUI 常驻 RSS / 拖拽延迟 / 预览 CPU 需在桌面上按 `docs/VERIFY_M3.5-G3.md` §4 采集后补填。
 
 **G2 资源基线**（本机 niri，release，`panic=abort` + LTO + strip）：
 
@@ -661,7 +691,7 @@ crates/petweave-settings/
 
 | 合成器 | 宿主多宠物 | 控制通道 | GUI 启动 | 画布定位 | 备注 |
 |---|---|---|---|---|---|
-| niri（当前） | ✅ | ✅ | ✅ | ⬜ | 三宠物同屏 + 热增删已验证；G1 控制通道在两宠物下全 op 实测；G2 设置在 niri 启动成功（窗口标题/进程验证），设置窗口会被平铺，需文档给浮动规则 |
+| niri（当前） | ✅ | ✅ | ✅ | ⬜ | 三宠物同屏 + 热增删已验证；G1 控制通道在两宠物下全 op 实测；G2 设置在 niri 启动成功（窗口标题/进程验证），设置窗口会被平铺，需文档给浮动规则；G3 画布**本轮未实测**（无桌面会话），清单见 `docs/VERIFY_M3.5-G3.md` |
 | Hyprland | ⬜ | ⬜ | ⬜ | ⬜ | — |
 | Sway | ⬜ | ⬜ | ⬜ | ⬜ | — |
 | KWin (Plasma 6) | ⬜ | ⬜ | ⬜ | ⬜ | — |
@@ -677,4 +707,5 @@ crates/petweave-settings/
 | 2026-10-18 | v0.3 | **G1 落地**：`platform/control.rs`（JSON Lines / 64 KiB 行上限 / 0700+0600）、主线程 `HostCommand::Control` 分发、§6.3 全部 op（`RenderPet` 延后，Q6 定案）与三类事件、`petweave control` 调试客户端、9 项协议测试 + niri 双宠物实机验收；宿主仍零 GUI 依赖（新增依赖仅 `serde_json`） |
 | 2026-10-18 | v0.4 | **G2 落地**：新增 `crates/petweave-settings`（eframe 0.37/egui 0.37，MSRV 1.95，glow）、`store.rs`（toml_edit 逐键更新保注释、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、回读校验、旧格式迁移、外部修改检测）、非阻塞 `client.rs`（重连/握手/版本降级）、宠物列表 + 参数表单 + 关于页、`petweave settings` 入口；21 项库测试 + 4 项集成测试（含 `egui_kittest`）；宿主导出依赖树无 egui/eframe/winit（N01） |
 | 2026-10-18 | v0.5 | **G2 热重载修复**：`package` 变更重建实例（原实现只走 `Pet::reload`，sprite/lua 不会换包）；BongoCat 的配置宽高通过 `Pet::resize_to` 等比缩放素材（原实现只改 surface，猫的大小不变）；GUI 在宿主未连接时记住保存并补发 `Reload`，状态栏不再谎报"已通知"；新增 2 项 store→host 集成回归测试（尺寸/换包）与 1 项 Bongo 缩放单测 |
+| 2026-10-22 | v0.7 | **G3 落地（待桌面实测）**（体积：宿主 8.01 MiB / 面板 15.03 MiB）：新增 `canvas.rs`（`CanvasMap` 输出↔画布等比可逆映射、8px+边界+中心线吸附、anchor/margin↔rect 往返、预设、命中测试、显示器分页）与 `preview.rs`（宿主同款 `Runtime` 渲染 + 预乘 alpha 降采样 + 纹理缓存 + 10fps 节流）；布局页画布/拖拽实时 `SetPlacement`/吸附参考线/双向表单/两枚预设/显示器热插拔；列表缩略图与参数页动画预览；`Client::set_placement`；测试 34+13 项（含 `egui_kittest` 与脚本宿主）；新增 `docs/VERIFY_M3.5-G3.md` 作为下一轮桌面验收清单 |
 | 2026-10-18 | v0.6 | **「继承」修复**：sprite/lua 把 layout box（`resize_to`）与固有尺寸（`preferred_size`）分开记录，删除 `width/height` 后回到包/脚本尺寸（此前 `SpritePet`/`LuaPet` 的 preferred 会被缩放后的 surface 覆盖，导致"点继承保存不变化"）；「继承」按钮加无障碍标签，新增 kittest 继承保存测试与 2 项宿主回归测试 |

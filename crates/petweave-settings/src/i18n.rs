@@ -9,6 +9,7 @@ impl Tr {
     pub const APP_TITLE: &'static str = "PetWeave 设置";
     pub const SIDEBAR_PETS: &'static str = "宠物列表";
     pub const SIDEBAR_PARAMS: &'static str = "参数";
+    pub const SIDEBAR_LAYOUT: &'static str = "布局";
     pub const SIDEBAR_ABOUT: &'static str = "关于";
 
     pub const SAVE: &'static str = "保存并应用";
@@ -20,6 +21,7 @@ impl Tr {
     pub const ADD_BUILTIN: &'static str = "内置类型";
     pub const ADD_PACKAGE: &'static str = "已安装角色包";
     pub const NO_PACKAGES: &'static str = "（未安装角色包）";
+    pub const COL_PREVIEW: &'static str = "预览";
     pub const COL_NAME: &'static str = "名字";
     pub const COL_KIND: &'static str = "类型";
     pub const COL_PACKAGE: &'static str = "角色包";
@@ -70,6 +72,30 @@ impl Tr {
     pub const DEMO_COLOR: &'static str = "颜色（#rrggbb）";
     pub const PACKAGE_ONLY: &'static str = "该类型的参数由角色包脚本/清单提供。";
     pub const DEFAULT: &'static str = "默认";
+
+    // --- 布局画布 / 预览（G3） ---------------------------------------------
+    pub const LAYOUT_HEADING: &'static str = "布局";
+    pub const LAYOUT_SNAP: &'static str = "吸附";
+    pub const LAYOUT_SNAP_HINT: &'static str = "拖动时吸附到 8px 网格、显示器边缘与中心线";
+    pub const LAYOUT_REFRESH: &'static str = "刷新显示器";
+    pub const LAYOUT_REFRESHED: &'static str = "已向宿主请求刷新显示器与宠物快照";
+    pub const LAYOUT_OFFLINE: &'static str =
+        "宿主未连接：画布使用示意尺寸（1920×1080），保存后下次启动生效";
+    pub const LAYOUT_EMPTY: &'static str = "该显示器上还没有宠物";
+    pub const LAYOUT_DRAGGED: &'static str = "已更新配置（点「保存并应用」写入文件）";
+    pub const ANCHOR_HINT: &'static str = "锚点决定贴哪条边；拖动会自动归一化为角锚点";
+    pub const ANCHOR_TOP_HINT: &'static str = "贴顶部：margin_top 生效";
+    pub const ANCHOR_BOTTOM_HINT: &'static str = "贴底部：margin_bottom 生效";
+    pub const ANCHOR_LEFT_HINT: &'static str = "贴左侧：margin_left 生效";
+    pub const ANCHOR_RIGHT_HINT: &'static str = "贴右侧：margin_right 生效";
+    pub const PRESET_BOTTOM_CENTER: &'static str = "放到底部居中";
+    pub const PRESET_BOTTOM_CENTER_HINT: &'static str = "只写必要的键（anchor / margin_bottom）";
+    pub const PRESET_RESET: &'static str = "恢复默认位置";
+    pub const PRESET_RESET_HINT: &'static str = "删除 anchor 与四边 margin，回到 [render] 继承";
+    pub const PREVIEW: &'static str = "预览";
+    pub const PREVIEW_RUNTIME: &'static str = "预览运行时";
+    pub const PREVIEW_LOAD_ERRORS: &'static str = "以下宠物无法预览（宿主侧可能同样无法加载）：";
+    pub const PREVIEW_UNAVAILABLE: &'static str = "无法预览（宠物未启用或加载失败）";
 
     pub const HOST_STATUS: &'static str = "宿主";
     pub const CONFIG_PATH: &'static str = "配置文件";

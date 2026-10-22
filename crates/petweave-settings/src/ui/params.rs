@@ -55,12 +55,18 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
         .collect();
     let mut kind_before: Option<String> = None;
 
+    let pet_id = pet.resolved_id(index);
+    let surface_size = app.pet_surface_size(index);
+    let mut preview_clicked = false;
     ui.horizontal(|ui| {
-        ui.heading(&pet.name);
-        ui.weak(format!(
-            "id: {}",
-            pet.id.clone().unwrap_or_else(|| "-".into())
-        ));
+        ui.vertical(|ui| {
+            ui.heading(&pet.name);
+            ui.weak(format!("id: {pet_id}"));
+            ui.weak(format!("表面尺寸 {}×{}", surface_size.0, surface_size.1));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            preview_clicked = preview_panel(app, ui, &pet_id);
+        });
     });
     ui.add_space(4.0);
 
@@ -224,6 +230,41 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
     if let Some(before) = kind_before {
         app.on_kind_changed(&before);
     }
+    if preview_clicked {
+        // The preview doubles as a "看当前样子" refresh: drop cached frames.
+        app.preview.invalidate();
+    }
+}
+
+/// Animation preview of the selected pet (F30).
+///
+/// Uses the same `petweave` runtime as the desktop (D7), so the sleeping frame,
+/// speech bubbles and script-driven sizes all show up here too. Clicking it
+/// forces a fresh frame.
+fn preview_panel(app: &mut SettingsApp, ui: &mut egui::Ui, id: &str) -> bool {
+    let ctx = ui.ctx().clone();
+    let mut clicked = false;
+    ui.vertical(|ui| {
+        ui.label(egui::RichText::new(Tr::PREVIEW).small().weak());
+        match app.preview.texture(&ctx, id, 320) {
+            Some(texture) => {
+                let tex = texture.size_vec2();
+                let scale = (320.0 / tex.x.max(1.0))
+                    .min(160.0 / tex.y.max(1.0))
+                    .min(1.0);
+                let response = ui.add(
+                    egui::Image::new(&texture)
+                        .fit_to_exact_size(tex * scale.max(0.05))
+                        .sense(egui::Sense::click()),
+                );
+                clicked = response.clicked();
+            }
+            None => {
+                ui.weak(Tr::PREVIEW_UNAVAILABLE);
+            }
+        }
+    });
+    clicked
 }
 
 fn bongo_params(ui: &mut egui::Ui, pet: &mut PetInstance) {

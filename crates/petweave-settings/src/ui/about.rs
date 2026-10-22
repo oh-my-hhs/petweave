@@ -51,10 +51,31 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
                 petweave::package::repo_dir().display().to_string(),
             ));
             ui.end_row();
+
+            ui.label(Tr::PREVIEW_RUNTIME);
+            ui.label(format!(
+                "{} 只可预览 / 重建 {} 次",
+                app.preview.loaded_ids().len(),
+                app.preview.rebuilds
+            ));
+            ui.end_row();
         });
     ui.add_space(8.0);
     ui.separator();
     ui.label(egui::RichText::new(Tr::ABOUT_NOTE).weak());
+    // Pets the preview runtime could not load (package missing, script error):
+    // the list page only shows a count, the reason lives here (F40 defers the
+    // full diagnostics page, but a failure must never be silent).
+    if !app.preview.load_errors.is_empty() {
+        ui.add_space(6.0);
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 130, 0),
+            Tr::PREVIEW_LOAD_ERRORS,
+        );
+        for (id, error) in &app.preview.load_errors {
+            ui.label(egui::RichText::new(format!("{id}: {error}")).small());
+        }
+    }
     if !app.font_note.is_empty() {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(&app.font_note).small().weak());

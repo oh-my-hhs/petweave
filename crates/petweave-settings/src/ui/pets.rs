@@ -1,11 +1,27 @@
 //! Pet list page (F10/F11): table, enable toggle, duplicate/delete/reorder,
-//! and adding built-in kinds or installed packages.
+//! and adding built-in kinds or installed packages. Since G3 the first column
+//! is a live thumbnail rendered by the host's own runtime (F30).
 
 use eframe::egui;
 
 use crate::app::SettingsApp;
 use crate::i18n::Tr;
 use crate::ui;
+
+/// Thumbnail size in logical pixels (drawn at the widget scale).
+const THUMB: u32 = 40;
+
+/// One row's data, snapshotted so the table can borrow `app` mutably for the
+/// preview textures and for the pending action.
+struct Row {
+    index: usize,
+    id: String,
+    name: String,
+    kind: String,
+    package: String,
+    enabled: bool,
+    position: String,
+}
 
 enum Action {
     Select(usize),
@@ -23,15 +39,33 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
     let mut action: Option<Action> = None;
     let mut add: Option<(String, String)> = None;
 
+    let rows: Vec<Row> = app
+        .draft
+        .pets
+        .iter()
+        .enumerate()
+        .map(|(index, pet)| Row {
+            index,
+            id: pet.resolved_id(index),
+            name: pet.name.clone(),
+            kind: pet.kind.clone(),
+            package: pet.package.clone(),
+            enabled: pet.enabled,
+            position: ui::position_summary(pet, &render),
+        })
+        .collect();
+
+    let ctx = ui.ctx().clone();
     egui::ScrollArea::vertical()
         .max_height((ui.available_height() - 40.0).max(120.0))
         .show(ui, |ui| {
             egui::Grid::new("pets_table")
-                .num_columns(6)
+                .num_columns(7)
                 .striped(true)
                 .spacing([14.0, 6.0])
-                .min_col_width(60.0)
+                .min_col_width(48.0)
                 .show(ui, |ui| {
+                    ui.strong(Tr::COL_PREVIEW);
                     ui.strong(Tr::COL_NAME);
                     ui.strong(Tr::COL_KIND);
                     ui.strong(Tr::COL_PACKAGE);
@@ -40,46 +74,68 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
                     ui.strong(Tr::COL_ACTIONS);
                     ui.end_row();
 
-                    for (index, pet) in app.draft.pets.iter().enumerate() {
-                        let selected = app.selected == Some(index);
-                        if ui.selectable_label(selected, &pet.name).clicked() {
-                            action = Some(Action::Select(index));
+                    for row in &rows {
+                        // Thumbnail (F30): same render path as the desktop.
+                        let texture = if row.enabled {
+                            app.preview.texture(&ctx, &row.id, THUMB)
+                        } else {
+                            None
+                        };
+                        if let Some(texture) = texture {
+                            let size = egui::vec2(THUMB as f32, THUMB as f32);
+                            ui.add(egui::Image::new(&texture).fit_to_exact_size(size));
+                        } else {
+                            // Disabled/无法加载：画一个占位方块。
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(THUMB as f32, THUMB as f32),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(
+                                rect,
+                                3.0,
+                                ui.visuals().widgets.inactive.bg_fill.linear_multiply(0.6),
+                            );
                         }
-                        ui.label(ui::kind_label(&pet.kind));
-                        ui.label(if pet.package.is_empty() {
+
+                        let selected = app.selected == Some(row.index);
+                        if ui.selectable_label(selected, &row.name).clicked() {
+                            action = Some(Action::Select(row.index));
+                        }
+                        ui.label(ui::kind_label(&row.kind));
+                        ui.label(if row.package.is_empty() {
                             "-".to_string()
                         } else {
-                            pet.package.clone()
+                            row.package.clone()
                         });
-                        let state = if pet.enabled {
+                        let state = if row.enabled {
                             Tr::ENABLED
                         } else {
                             Tr::DISABLED
                         };
                         if ui.small_button(state).clicked() {
-                            action = Some(Action::Toggle(index));
+                            action = Some(Action::Toggle(row.index));
                         }
-                        ui.label(ui::position_summary(pet, &render));
+                        ui.label(&row.position);
                         ui.horizontal(|ui| {
                             if ui
                                 .small_button(Tr::MOVE_UP)
                                 .on_hover_text("配置顺序也是叠放顺序")
                                 .clicked()
                             {
-                                action = Some(Action::Move(index, -1));
+                                action = Some(Action::Move(row.index, -1));
                             }
                             if ui.small_button(Tr::MOVE_DOWN).clicked() {
-                                action = Some(Action::Move(index, 1));
+                                action = Some(Action::Move(row.index, 1));
                             }
                             if ui.small_button(Tr::COPY).clicked() {
-                                action = Some(Action::Copy(index));
+                                action = Some(Action::Copy(row.index));
                             }
                             if ui
                                 .small_button(Tr::DELETE)
                                 .on_hover_text("从配置中移除（保存后宿主销毁 surface）")
                                 .clicked()
                             {
-                                action = Some(Action::Delete(index));
+                                action = Some(Action::Delete(row.index));
                             }
                         });
                         ui.end_row();
@@ -122,6 +178,12 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
         });
         if app.installed.is_empty() {
             ui.weak(Tr::NO_PACKAGES);
+        }
+        if !app.preview.load_errors.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 130, 0),
+                format!("预览加载失败：{} 只（详见「关于」页）", app.preview.load_errors.len()),
+            );
         }
     });
 

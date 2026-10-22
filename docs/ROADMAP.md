@@ -1,7 +1,7 @@
 # PetWeave 功能实现计划表
 
 > 依据 `docs/TECH_STACK.md` 的里程碑划分。`- [x]` 表示已完成，`- [ ]` 表示未完成。
-> 更新日期：2026-10-18（M3 完成；M3.5 进行中，G0/G1/G2 已落地，详见 `docs/GUI_ROADMAP.md`）
+> 更新日期：2026-10-22（M3 完成；M3.5 进行中：G0/G1/G2/G3 已落地，G3 待桌面实测，详见 `docs/GUI_ROADMAP.md`）
 
 ## 当前状态
 
@@ -14,7 +14,7 @@
 | M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS`；两个参考包端到端测试通过 |
 | M2.7 尺寸与摆放契约（GUI 前置） | ✅ 完成 | 尺寸优先级 `[[pets]]` > 宠物 > `[render]`、等比缩放不拉伸、删除 anchor/bob、`pet.offset(dx,dy)` + `padding`；`Pet::resize_to` / `Runtime::fit_frames` 让配置尺寸真正缩放内容 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存；设置面板由 M3.5 G2 完成 |
-| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物配置 ✅、G1 控制通道 ✅、G2 设置面板 MVP ✅（`petweave-settings`，独立进程）；G3 布局画布/预览、G4 诊断/分发待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
+| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物配置 ✅、G1 控制通道 ✅、G2 设置面板 MVP ✅、G3 布局画布 + 实时预览 ✅（代码与自动化测试完成，**桌面实测待下一轮**，清单见 [`docs/VERIFY_M3.5-G3.md`](VERIFY_M3.5-G3.md)）；G4 诊断/分发待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
 ---
@@ -108,13 +108,16 @@
       非阻塞控制通道 client + 原子保存（`toml_edit` 逐键更新保注释、`.bak`、0600、回读校验、旧格式迁移、外部修改检测）+
       `petweave settings` 入口；热重载：`kind`/`package` 自动重建、配置宽高等比缩放素材、删除宽高（继承）回到宠物固有尺寸；
       21 项库测试 + 4 项集成测试（含 `egui_kittest`）（详见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md) §9 G2）
-- [ ] G3 布局画布与实时预览：按显示器分页拖拽定位（吸附）+ 缩略图/动画预览（复用 `Frame` 渲染）
-      （G2 已提供 anchor + 四边 margin 的等效表单）
+- [x] G3 布局画布与实时预览：按显示器分页拖拽定位（8px 网格 + 边/中心线吸附、可关）+ 缩略图/动画预览
+      （复用宿主 `Runtime`/`Frame` 渲染，~10fps，仅显示时运行）+ 表单与画布双向同步 + 「放到底部居中/恢复默认位置」预设；
+      拖拽实时 `SetPlacement`、松手写配置；显示器热插拔重建页面
+      （`canvas`/`preview`/`ui::layout`；34 项设置库测试 + 13 项集成测试；桌面验收清单见 `docs/VERIFY_M3.5-G3.md`）
 - [ ] G4 诊断与分发：内嵌 `doctor`、托盘「设置…」、PKGBUILD/Nix 产物、README 章节
 - [x] 入口：`petweave settings`（exec 同目录/`PATH` 的 `petweave-settings`）+ 独立二进制（缺失时给出构建/安装提示）
 - [ ] 托盘「设置…」入口（G4）
 - 验收：不手写 TOML，纯 GUI 完成"三只宠物同屏、各自定位、改 BongoCat 高度并在桌面立即生效"——
-      G2 已支持列表增删/复制/排序、anchor+margin 表单、尺寸/参数保存并即时生效；G3 的画布与缩略图预览完成后补齐视觉验收
+      G2 已支持列表增删/复制/排序、anchor+margin 表单、尺寸/参数保存并即时生效；G3 补齐画布拖拽与缩略图/动画预览，
+      视觉验收（跟手、吸附线、与桌面同帧）待下一轮按 `docs/VERIFY_M3.5-G3.md` 在桌面完成
 
 ## M4 深度集成
 
@@ -246,6 +249,12 @@
   完成增删（surface 创建/销毁）、换 kind（重建）、改尺寸（重配置）。共享资产缓存使同尺寸的两只
   BongoCat 只解码一次（`hits`/`decoded` 见 `runtime … asset cache` 日志），Q1 结论为**按 key 引用计数共享**。
 - **G2 热重载语义（已修复）**：`kind`/`package` 变更自动重建宠物实例；`width/height` 变更把素材等比缩放进盒子（BongoCat 也生效）；删除 `width/height`（GUI「继承」）回到宠物固有尺寸；`output` 变更重建/重绑 surface；其余参数原地应用。GUI 未连接宿主时保存会在握手后补发 `Reload`。
+- **G3 自动化基线**：`cargo test --offline` 全量 **186 项**（103 host + 38 core + 45 settings，其中 G3 新增 10 项几何单测、
+  2 项控制通道测试、6 项 `egui_kittest` 布局测试、1 项脚本宿主分页/`SetPlacement` 测试）。无 GPU、
+  无合成器环境下全部通过；`clippy --all-targets` 对新增代码零警告（`petweave-settings` 无新增告警）。
+- **G3 体积基线**（release，strip）：`petweave` **8.01MiB**（8,399,768 B；宿主本轮零改动，差额来自 G2 之后的两个修复提交）、
+  `petweave-settings` **15.03MiB**（15,761,152 B，较 G2 的 12.39MiB +2.64MiB）——预览按 D7 在 GUI 侧调用宿主 runtime，
+  resvg/mlua/image 因此进入面板二元；宿主体积与依赖树不受影响（N01 仍满足）。GUI 常驻 RSS 待桌面复测。
 - **G2 体积/内存基线**：release 下 `petweave` **7.73MiB**、`petweave-settings` **12.39MiB**；
   GUI 常驻 RSS ≈190MB（Mesa 软件 GL 回退，真实 GPU 待复测），宿主单 BongoCat（scale 2）≈14.9MB。
   宿主依赖树仍无 egui/eframe/winit（N01）。

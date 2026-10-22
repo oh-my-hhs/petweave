@@ -7,21 +7,25 @@
 //! flags to get out of sync.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use petweave::package::InstalledPkg;
 use petweave::platform::control;
 use petweave_core::config::{BongoConfig, Config, PetInstance, RenderConfig, MAX_PETS};
+use petweave_core::placement::Rect;
 
+use crate::canvas::{self, CanvasPet, CanvasState, OutputPage};
 use crate::client::Client;
 use crate::i18n::Tr;
+use crate::preview::{PreviewCache, PREVIEW_INTERVAL};
 use crate::store::Store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Pets,
     Params,
+    Layout,
     About,
 }
 
@@ -30,8 +34,15 @@ impl Page {
         match self {
             Self::Pets => Tr::SIDEBAR_PETS,
             Self::Params => Tr::SIDEBAR_PARAMS,
+            Self::Layout => Tr::SIDEBAR_LAYOUT,
             Self::About => Tr::SIDEBAR_ABOUT,
         }
+    }
+
+    /// Pages that show pet previews (F30) and therefore drive the animation
+    /// clock.
+    pub fn shows_previews(self) -> bool {
+        matches!(self, Self::Pets | Self::Params | Self::Layout)
     }
 }
 
@@ -57,6 +68,14 @@ pub struct SettingsApp {
     /// A save happened while the control socket was not connected; send
     /// `Reload` as soon as the handshake completes (inotify is a fallback).
     pub pending_reload: bool,
+    /// Preview runtime + texture cache (F30). Rebuilt only when the rendered
+    /// inputs change; ticking it is what animates thumbnails.
+    pub preview: PreviewCache,
+    /// Layout canvas state (selected output page, snapping, in-flight drag).
+    pub canvas: CanvasState,
+    /// When the layout page last asked the host for `ListOutputs`/`ListPets`
+    /// (monitor hotplug + pets dragged on the desktop, F21).
+    pub last_control_refresh: Instant,
 }
 
 impl SettingsApp {
@@ -91,6 +110,9 @@ impl SettingsApp {
             close_confirm: false,
             allow_close: false,
             pending_reload: false,
+            preview: PreviewCache::new(),
+            canvas: CanvasState::default(),
+            last_control_refresh: Instant::now(),
         })
     }
 
@@ -130,6 +152,155 @@ impl SettingsApp {
             .iter()
             .filter(|pkg| pkg.kind == kind)
             .collect()
+    }
+
+    // --- layout / preview (G3) --------------------------------------------
+
+    /// Canvas pages: one per `ListOutputs` entry, else a synthetic stand-in so
+    /// the layout page keeps working with the host offline (F33).
+    pub fn output_pages(&self) -> Vec<OutputPage> {
+        canvas::output_pages(&self.client.outputs)
+    }
+
+    /// Surface size to draw for `index`: the loaded pet's own size when the
+    /// preview runtime has it (script-owned sizes included), else the config
+    /// precedence without the pet's preferred size (disabled/offline pets).
+    pub fn pet_surface_size(&self, index: usize) -> (u32, u32) {
+        let Some(pet) = self.draft.pets.get(index) else {
+            return (self.draft.render.width, self.draft.render.height);
+        };
+        let id = pet.resolved_id(index);
+        self.preview.surface_size(&id).unwrap_or_else(|| {
+            let render = &self.draft.render;
+            (
+                pet.width.unwrap_or(render.width),
+                pet.height.unwrap_or(render.height),
+            )
+        })
+    }
+
+    /// Which page a pet is drawn on: its `output`, else the first page.
+    pub fn pet_page_name(&self, index: usize, pages: &[OutputPage]) -> String {
+        let configured = self
+            .draft
+            .pets
+            .get(index)
+            .and_then(|pet| pet.output.clone())
+            .unwrap_or_default();
+        canvas::page_for_pet(pages, &configured).name.clone()
+    }
+
+    /// Every pet that belongs on page `page_index`, in config order
+    /// (= stacking order).
+    ///
+    /// The rectangle comes from the running host when it reports one
+    /// (`PetInfo.rect`, which also reflects dragging on the desktop), and from
+    /// the placement mirror + preview size otherwise.
+    pub fn canvas_pets(&self, pages: &[OutputPage], page_index: usize) -> Vec<CanvasPet> {
+        let Some(page) = pages.get(page_index) else {
+            return Vec::new();
+        };
+        let render = &self.draft.render;
+        let mut pets = Vec::new();
+        for (index, pet) in self.draft.pets.iter().enumerate() {
+            if self.pet_page_name(index, pages) != page.name {
+                continue;
+            }
+            let id = pet.resolved_id(index);
+            let size = self.pet_surface_size(index);
+            let (rect, live) = match self.client.pets.iter().find(|info| info.id == id) {
+                Some(info) => (
+                    Rect {
+                        x: info.rect[0] as f64,
+                        y: info.rect[1] as f64,
+                        width: info.rect[2].max(1) as f64,
+                        height: info.rect[3].max(1) as f64,
+                    },
+                    true,
+                ),
+                None => (canvas::pet_rect(pet, render, size, page.rect), false),
+            };
+            pets.push(CanvasPet {
+                index,
+                id,
+                name: pet.display_name(index),
+                rect,
+                size,
+                enabled: pet.enabled,
+                live,
+            });
+        }
+        pets
+    }
+
+    /// Write an absolute position for one pet (F22) and return the placement
+    /// in control-channel shape so it can be pushed live.
+    pub fn set_pet_position(
+        &mut self,
+        index: usize,
+        x: f64,
+        y: f64,
+        page: &OutputPage,
+    ) -> Option<(String, [i32; 4])> {
+        let size = self.pet_surface_size(index);
+        let render = self.draft.render.clone();
+        let pet = self.draft.pets.get_mut(index)?;
+        Some(canvas::apply_position(pet, &render, size, x, y, page.rect))
+    }
+
+    /// Push a placement to the running host (no-op when it is offline). The
+    /// canvas throttles these; the config file is still written on save (D10).
+    pub fn push_placement(&mut self, id: &str, placement: &(String, [i32; 4])) -> bool {
+        if !self.canvas.should_send(id, placement) {
+            return false;
+        }
+        self.client
+            .set_placement(id, &placement.0, placement.1)
+    }
+
+    /// F24 preset: bottom centre, then push it live.
+    pub fn preset_bottom_center(&mut self, index: usize) {
+        let render = self.draft.render.clone();
+        if let Some(pet) = self.draft.pets.get_mut(index) {
+            canvas::apply_bottom_center(pet, &render);
+        }
+        self.resend_placement(index);
+    }
+
+    /// F24 preset: drop all placement overrides (back to `[render]`).
+    pub fn preset_clear_placement(&mut self, index: usize) {
+        if let Some(pet) = self.draft.pets.get_mut(index) {
+            canvas::clear_placement(pet);
+        }
+        self.resend_placement(index);
+    }
+
+    /// Recompute a pet's placement from the draft and push it to the host.
+    ///
+    /// Used after edits that do not go through a drag (anchor checkboxes,
+    /// margin fields, presets) so the desktop follows the form immediately.
+    pub fn resend_placement(&mut self, index: usize) {
+        let render = self.draft.render.clone();
+        let Some(pet) = self.draft.pets.get(index) else {
+            return;
+        };
+        let (anchor, margins) = canvas::resolved_placement(pet, &render);
+        let placement = (
+            canvas::anchor_string(anchor),
+            [margins.0, margins.1, margins.2, margins.3],
+        );
+        let id = pet.resolved_id(index);
+        self.push_placement(&id, &placement);
+    }
+
+    /// Ask the host for fresh pets/outputs (monitor hotplug, F21).
+    pub fn refresh_control(&mut self) {
+        self.last_control_refresh = Instant::now();
+        if !self.client.can_control() {
+            return;
+        }
+        self.client.list_pets();
+        self.client.list_outputs();
     }
 
     /// Stable `{kind}-{n}` id that is not used by the draft yet (D11).
@@ -304,6 +475,27 @@ impl SettingsApp {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
 
+        // Previews (F30) only run while a page that shows them is visible, at
+        // ~10 fps; the About page costs nothing.
+        if self.page.shows_previews() {
+            self.preview.sync(&self.draft);
+            if self.preview.tick() {
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(PREVIEW_INTERVAL);
+            }
+        }
+
+        // Monitor hotplug and pets dragged on the desktop (F21): the layout
+        // page refreshes its snapshot twice a second instead of trusting a
+        // stale `ListOutputs` answer from handshake time.
+        if self.page == Page::Layout
+            && self.client.can_control()
+            && self.last_control_refresh.elapsed() >= Duration::from_millis(2000)
+        {
+            self.refresh_control();
+        }
+
         // Close confirmation when there are unsaved edits.
         if ctx.input(|input| input.viewport().close_requested())
             && self.dirty()
@@ -388,7 +580,7 @@ impl SettingsApp {
     /// Sidebar navigation.
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        for page in [Page::Pets, Page::Params, Page::About] {
+        for page in [Page::Pets, Page::Params, Page::Layout, Page::About] {
             let selected = self.page == page;
             if ui.selectable_label(selected, page.label()).clicked() {
                 self.page = page;
@@ -444,12 +636,17 @@ impl SettingsApp {
         match self.page {
             Page::Pets => crate::ui::pets::show(self, ui),
             Page::Params => crate::ui::params::show(self, ui),
+            Page::Layout => crate::ui::layout::show(self, ui),
             Page::About => crate::ui::about::show(self, ui),
         }
     }
 
-    /// Combined top bar + page, for the `egui_kittest` harness.
+    /// Combined frame for the `egui_kittest` harness: the same per-frame work
+    /// the real app does ([`Self::update_frame`]) plus top bar and page, so
+    /// tests exercise preview syncing and control polling too.
     pub fn ui_test(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.update_frame(&ctx);
         self.top_bar(ui);
         self.central(ui);
     }

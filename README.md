@@ -13,7 +13,7 @@
 - 配置热重载、键盘热插拔、进程单例、优雅退出
 - 预置宠物：`demo`（按键闪白）、`bongo`（BongoCat 爪击动画，wayland-bongocat 移植，SVG 睡眠帧）
 - **角色包**：`.petweave` 格式 + 声明式精灵宠物（零代码）+ **Lua 脚本宠物**（mlua 沙箱、气泡对话），工具链 `install/uninstall/list/package/import`
-- **图形设置界面**：独立进程 `petweave-settings`（egui/eframe），宠物列表 / 参数表单 / 保注释保存 / 控制通道实时生效；宿主仍零 GUI 依赖
+- **图形设置界面**：独立进程 `petweave-settings`（egui/eframe），宠物列表 + 缩略图 / 参数表单 / **按显示器分页的布局画布**（拖拽 + 吸附）/ 保注释保存 / 控制通道实时生效；宿主仍零 GUI 依赖
 - **生态开放**：创建角色包 → [docs/PACKAGES.md](docs/PACKAGES.md)（从零教程）· 贡献与投稿 → [CONTRIBUTING.md](CONTRIBUTING.md)
 
 创新点说明见 [Innovation.md](Innovation.md) · 架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md) · 图形设置界面计划见 [docs/GUI_ROADMAP.md](docs/GUI_ROADMAP.md)
@@ -23,7 +23,7 @@
 ```bash
 cargo build --release -p petweave           # 宿主: target/release/petweave（Rust 1.80+）
 cargo build --release -p petweave-settings  # 设置面板（Rust 1.95+）
-cargo test                                  # 全部测试（166 项；需要 1.95+ 才能编译 settings）
+cargo test                                  # 全部测试（186 项；需要 1.95+ 才能编译 settings）
 ```
 
 GUI 依赖已随仓库的 `.cargo-home` vendored；在没有缓存的机器上首次构建需要联网下载，
@@ -237,9 +237,10 @@ petweave settings                      # 或直接运行 ./target/debug/petweave
 ```
 
 设置面板是一个**独立进程**，宿主不链接任何 GUI 库；关闭面板不影响桌面上的宠物。
-功能（M3.5 G2）：
+功能（M3.5 G2 + G3）：
 
-- 宠物列表：启用/停用、上移/下移（顺序=叠放顺序）、复制、删除；从内置类型或已安装角色包添加。
+- 宠物列表：**实时缩略图**（与桌面同一渲染路径）、启用/停用、上移/下移（顺序=叠放顺序）、复制、删除；
+  从内置类型或已安装角色包添加。
 - 参数表单：名字/尺寸/锚点/边距/层级/移动模式/显示器/点击穿透；BongoCat 的猫高度、爪击保持、
   睡眠窗口、镜像；demo 颜色；sprite/lua 的包选择。未写出的值显示「继承 [render]」并有「恢复默认」。
 - 保存并应用：`toml_edit` 逐键更新，**手写注释与键顺序保留**；原子写 + `.bak` + `0600`；
@@ -247,8 +248,14 @@ petweave settings                      # 或直接运行 ./target/debug/petweave
 - 热重载：改宽高会等比缩放素材（BongoCat 也是）、点「继承」删除宽高会回到宠物固有尺寸；
   换 `kind`/角色包会自动重建宠物实例；宿主未连接时状态栏会说明"启动后生效"，并在连上后补发重载。
 - 宿主离线时仍可编辑保存（下次启动生效）；配置文件被其他程序改动时拒绝覆盖并提示重新加载。
+- **布局页（G3）**：按显示器分页的画布，画出每台显示器的真实尺寸与每只宠物的真实 rect；
+  拖动宠物即时生效（`SetPlacement`）并写回配置，吸附 8px 网格 / 显示器边缘 / 中心线（可关）；
+  下方是与画布双向同步的 anchor 复选 + 四边 margin 表单，以及「放到底部居中」「恢复默认位置」预设
+  （只写必要的键）。显示器拔插后画布自动重建。
+- **预览（G3）**：列表缩略图与参数页动画预览都走宿主同款 `Runtime`/`Frame` 渲染（约 10fps，
+  只有显示时才跑），睡眠帧、气泡、脚本自定义尺寸都会如实显示。
 
-布局画布/缩略图预览（G3）与诊断页（G4）尚未实现，路线见 [`docs/GUI_ROADMAP.md`](docs/GUI_ROADMAP.md)。
+诊断页（G4）尚未实现，路线见 [`docs/GUI_ROADMAP.md`](docs/GUI_ROADMAP.md)。
 
 ### 控制通道（设置界面前置）
 

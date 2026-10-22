@@ -60,6 +60,9 @@ enum Pending {
     ListPets,
     ListOutputs,
     Reload,
+    /// Placement pushes are fire-and-forget; the pending entry only lets the
+    /// canvas notice a rejection (`pet_not_found`) via `last_error`.
+    SetPlacement,
 }
 
 pub struct Client {
@@ -168,6 +171,22 @@ impl Client {
             return false;
         }
         self.request_pending(Pending::ListOutputs, Op::ListOutputs)
+    }
+
+    /// Live placement update while dragging on the canvas (F22). The host
+    /// applies it to the running surface only (D10: the GUI writes the file).
+    pub fn set_placement(&mut self, pet: &str, anchor: &str, margins: [i32; 4]) -> bool {
+        if !self.can_control() {
+            return false;
+        }
+        self.request_pending(
+            Pending::SetPlacement,
+            Op::SetPlacement {
+                pet: pet.to_string(),
+                anchor: anchor.to_string(),
+                margins,
+            },
+        )
     }
 
     /// Send an arbitrary request (tests/forward-compat); returns the id.
@@ -316,6 +335,10 @@ impl Client {
             }
             Some(Pending::Reload) => {
                 self.list_pets();
+            }
+            Some(Pending::SetPlacement) => {
+                // The host pushes `PetsChanged` after applying it, so the
+                // snapshot refreshes without another round trip.
             }
             None => {}
         }
@@ -513,6 +536,39 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(seen.iter().any(|op| op == "Reload"), "ops: {seen:?}");
+    }
+
+    #[test]
+    fn set_placement_is_sent_while_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (ops, _host) = spawn_host(path.clone(), true);
+        let mut client = Client::new(path);
+        client.connect().expect("connect");
+        assert!(wait_until(&mut client, Duration::from_secs(2), |c| {
+            c.state() == &ConnectionState::Connected
+        }));
+
+        assert!(client.set_placement("a", "bottom|left", [0, 0, 16, 240]));
+        let mut seen = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            client.tick();
+            while let Ok(op) = ops.try_recv() {
+                seen.push(op);
+            }
+            if seen.iter().any(|op| op == "SetPlacement") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(seen.iter().any(|op| op == "SetPlacement"), "ops: {seen:?}");
+    }
+
+    #[test]
+    fn set_placement_is_dropped_without_a_handshake() {
+        let mut client = Client::new(PathBuf::from("/nonexistent/control.sock"));
+        assert!(!client.set_placement("a", "bottom", [0, 0, 16, 0]));
     }
 
     #[test]

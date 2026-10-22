@@ -8,7 +8,7 @@
 > [TECH_STACK.md](TECH_STACK.md)（技术选型，§4.10 已预留 egui 设置面板）· [PACKAGES.md](PACKAGES.md)
 >
 > 状态图例：`✅ 完成` · `🔶 进行中` · `⬜ 未开始` · `⏸ 暂缓`
-> 版本：v0.7（G0/G1/G2/G3 已落地；G3 待桌面实测）· 最后更新：2026-10-22
+> 版本：v0.8（G0/G1/G2/G3 已落地并在 niri 实测通过）· 最后更新：2026-10-22
 
 ---
 
@@ -524,7 +524,7 @@ click_through = false
   - 布局画布/缩略图预览仍是 G3；诊断页仍是 G4。
   - 完整手工验收（鼠标点选三只宠物）建议在真实桌面上再走一遍；自动化已覆盖同等路径。
 
-### G3 · 布局画布与实时预览 ✅ 完成（桌面实测待下一轮）
+### G3 · 布局画布与实时预览 ✅ 完成（2026-10-22 niri 实测通过）
 
 - [x] `canvas.rs`：**纯函数**几何层 —— `CanvasMap`（输出逻辑像素 ↔ 画布屏幕像素，等比 letterbox 且可逆）、
       `snap_axis`/`snap_move`（8px 网格 + 显示器左/右/上/下边 + 中心线，阈值 6px；边/中心优先于网格）、
@@ -545,8 +545,12 @@ click_through = false
       集成 **13 项**（store→host 2、`egui_kittest` 保存/继承 2、G3 `ui_layout` 6、脚本宿主 `layout_host` 1）
 - 验收（**已自动验证**）：拖拽→保存后 `pet_rect` 与拖拽落点误差 <0.5px；预设只写必要键；
   脚本宿主下画布按 `output` 分页并显示宿主上报的真实 rect；`SetPlacement` 报文内容正确
-- 验收（**待桌面**，见 `docs/VERIFY_M3.5-G3.md`）：仅用鼠标把三只宠物摆成"左中右"，桌面与画布一致；
-  拖动时宠物跟手且吸附线可见；缩略图与桌面同帧
+- 验收（**已实机通过**，详见 `docs/VERIFY_M3.5-G3.md` §6）：画布按真实显示器分页并显示真实 rect；
+  拖拽实时生效（宿主 rect 与 `grim` 逐像素测量一致，落点 504,200）；松手保存写入 `anchor`/`margin_*`
+  且注释保留、`.bak` 生成；8px 网格/左边缘吸附与橙色参考线可见；两枚预设只写必要键；
+  缩略图/参数页预览与桌面同帧；显示器几何变化（scale 1.5→1.0）后画布 2s 内重排；宿主离线时示意画布 + 启动后自动接上。
+  验收中发现并修复：拖拽抓取偏移用了 `drag_started` 帧的指针（宠物会跳一个阈值距离）→ 改用 `press_origin()`；
+  画布背景 `Sense::click_and_drag()` 与宠物框抢 press → 改为 `Sense::hover()`
 
 ### G4 · 诊断与分发 ⬜ 未开始（下一步）
 
@@ -666,7 +670,7 @@ crates/petweave-settings/
 | G0 多宠物运行时 | ✅ | 配置 v2 / 校验 / 迁移 CLI / N surface / 热增删 / 资产缓存 / 多宠物托盘 / 98 项测试（当时） | 可在 niri 上三宠物试跑；GUI 可直接依赖 `petweave` lib 的 `runtime` |
 | G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
 | G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 4 项集成测试（含 kittest）、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
-| G3 布局/预览 | ✅（待桌面实测） | `canvas.rs` 纯几何（映射/吸附/anchor 往返）、布局页画布 + 拖拽 + 预设 + 双向表单、列表缩略图 + 参数页动画预览、显示器热插拔重建、13 项集成 + 10 项几何单测；桌面验收清单见 `docs/VERIFY_M3.5-G3.md` | 无 GPU/无合成器下全部自动化；视觉验收（跟手、吸附线、颜色）留待下一轮 |
+| G3 布局/预览 | ✅ | `canvas.rs` 纯几何、布局页画布 + 拖拽 + 吸附线 + 预设 + 双向表单、列表缩略图 + 参数页动画预览、显示器几何变化重排、13 项集成 + 10 项几何单测；niri 实机验收见 `docs/VERIFY_M3.5-G3.md` §6 | 面板窗口在 Xvfb（X11 后端）驱动，宠物在真实 Wayland；真实「拔显示器」与 IME 未覆盖 |
 | G4 诊断/分发 | ⬜ | — | 下一步：诊断页（F40）+ 托盘「设置…」+ 打包 |
 | G5 打磨 | ⏸ | — | 视反馈启动 |
 
@@ -707,5 +711,6 @@ GUI 常驻 RSS / 拖拽延迟 / 预览 CPU 需在桌面上按 `docs/VERIFY_M3.5-
 | 2026-10-18 | v0.3 | **G1 落地**：`platform/control.rs`（JSON Lines / 64 KiB 行上限 / 0700+0600）、主线程 `HostCommand::Control` 分发、§6.3 全部 op（`RenderPet` 延后，Q6 定案）与三类事件、`petweave control` 调试客户端、9 项协议测试 + niri 双宠物实机验收；宿主仍零 GUI 依赖（新增依赖仅 `serde_json`） |
 | 2026-10-18 | v0.4 | **G2 落地**：新增 `crates/petweave-settings`（eframe 0.37/egui 0.37，MSRV 1.95，glow）、`store.rs`（toml_edit 逐键更新保注释、`[[pets]]` 增删/重排、原子写 + `.bak` + 0600、回读校验、旧格式迁移、外部修改检测）、非阻塞 `client.rs`（重连/握手/版本降级）、宠物列表 + 参数表单 + 关于页、`petweave settings` 入口；21 项库测试 + 4 项集成测试（含 `egui_kittest`）；宿主导出依赖树无 egui/eframe/winit（N01） |
 | 2026-10-18 | v0.5 | **G2 热重载修复**：`package` 变更重建实例（原实现只走 `Pet::reload`，sprite/lua 不会换包）；BongoCat 的配置宽高通过 `Pet::resize_to` 等比缩放素材（原实现只改 surface，猫的大小不变）；GUI 在宿主未连接时记住保存并补发 `Reload`，状态栏不再谎报"已通知"；新增 2 项 store→host 集成回归测试（尺寸/换包）与 1 项 Bongo 缩放单测 |
+| 2026-10-22 | v0.8 | **G3 实机验收通过**：niri 26.04 + eDP-1(2560×1600@1.5) 实测画布分页/真实 rect/拖拽实时 `SetPlacement`/网格与边缘吸附/参考线/两枚预设/缩略图与动画预览/显示器几何变化重排/离线示意画布/自动重连；发现并修复两处只有真拖拽才暴露的问题（抓取偏移改用 `press_origin()`、画布背景 sense 改 `hover`）；面板 139.6MiB RSS（软件 GL）、布局页 ≈139% 单核 / 关于页 ≈2%，宿主 3 宠物 17.9MiB、空闲 0% CPU；实测数值写入 `docs/VERIFY_M3.5-G3.md` §4/§6 |
 | 2026-10-22 | v0.7 | **G3 落地（待桌面实测）**（体积：宿主 8.01 MiB / 面板 15.03 MiB）：新增 `canvas.rs`（`CanvasMap` 输出↔画布等比可逆映射、8px+边界+中心线吸附、anchor/margin↔rect 往返、预设、命中测试、显示器分页）与 `preview.rs`（宿主同款 `Runtime` 渲染 + 预乘 alpha 降采样 + 纹理缓存 + 10fps 节流）；布局页画布/拖拽实时 `SetPlacement`/吸附参考线/双向表单/两枚预设/显示器热插拔；列表缩略图与参数页动画预览；`Client::set_placement`；测试 34+13 项（含 `egui_kittest` 与脚本宿主）；新增 `docs/VERIFY_M3.5-G3.md` 作为下一轮桌面验收清单 |
 | 2026-10-18 | v0.6 | **「继承」修复**：sprite/lua 把 layout box（`resize_to`）与固有尺寸（`preferred_size`）分开记录，删除 `width/height` 后回到包/脚本尺寸（此前 `SpritePet`/`LuaPet` 的 preferred 会被缩放后的 surface 覆盖，导致"点继承保存不变化"）；「继承」按钮加无障碍标签，新增 kittest 继承保存测试与 2 项宿主回归测试 |

@@ -66,8 +66,11 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
         available.x.max(240.0),
         (available.y - FORM_HEIGHT).max(180.0),
     );
-    let (response, painter) =
-        ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
+    // `Sense::hover()` on the canvas itself: presses belong to the pet boxes
+    // registered below (a click-and-drag sense here would compete with them for
+    // the same pointer press and make dragging occasionally start on the
+    // background instead of on the pet).
+    let (response, painter) = ui.allocate_painter(canvas_size, egui::Sense::hover());
     let map = CanvasMap::new(response.rect, page.rect);
     paint_background(&painter, &map, &page, ui.visuals());
 
@@ -241,7 +244,13 @@ fn handle_canvas_input(
             clicked = Some(pet.index);
         }
         if response.drag_started() {
-            if let Some(pos) = pointer {
+            // Grab offset must use the position where the button went **down**,
+            // not the first frame in which egui reports the drag: the drag only
+            // starts once the pointer has moved past the drag threshold, so
+            // using the current position would shift the pet by that distance
+            // (a visible jump when the pointer moves fast).
+            let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
+            if let Some(pos) = origin {
                 let (ox, oy) = map.to_output(pos);
                 drag_start = Some((
                     pet.index,

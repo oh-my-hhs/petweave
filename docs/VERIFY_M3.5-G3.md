@@ -1,8 +1,9 @@
 # M3.5 · G3 验收手册（布局画布 + 实时预览）
 
-> **用途**：本轮（2026-10-22）在没有桌面会话的环境里实现了 G3 的代码与自动化测试，
-> **桌面视觉验收留到下一轮**。本文是下一轮照着做就能验收/回归的清单：
-> 每一节都写清"怎么跑、看什么、什么算通过、失败先看哪里"。
+> **用途**：G3 的验收手册 + 验收记录。
+> 2026-10-22 第一轮只写代码与自动化测试；同日晚在 niri 上补齐了**实机验收**（§6），
+> 过程中发现并修掉了 2 个只有真拖拽才会暴露的问题（§7）。
+> 本文保留「怎么做、看什么、什么算通过」的步骤，方便换机器/换合成器复跑。
 >
 > 相关文档：[ROADMAP](ROADMAP.md) · [GUI_ROADMAP §9 G3](GUI_ROADMAP.md) · [ARCHITECTURE](ARCHITECTURE.md) · [README](../README.md)
 
@@ -21,6 +22,7 @@
 | `crates/petweave-settings/src/app.rs` | `Page::Layout`、`preview`/`canvas` 状态、`output_pages`/`canvas_pets`/`set_pet_position`/`push_placement`/`resend_placement`/预设入口、布局页 2s 刷新 `ListPets`+`ListOutputs` |
 | `crates/petweave-settings/src/client.rs` | `Client::set_placement`（`SetPlacement` 发送；未握手时丢弃） |
 | 测试（新） | `canvas` 6 项、`preview` 4 项、`client` 2 项单测；`tests/ui_layout.rs` 6 项（kittest + API）、`tests/layout_host.rs` 1 项（脚本宿主） |
+| 实机验收修复（2026-10-22） | `ui/layout.rs`：拖拽抓取偏移改用 `press_origin()`（原来会让宠物按拖拽阈值的位移整体跳一下）；画布背景 sense 改为 `hover`（不再与宠物框抢 press）。详见 §7 |
 | **宿主 `crates/petweave`** | **零改动**（控制通道协议、渲染路径都没有变更，风险面全在 GUI 进程） |
 
 上一次稳定提交：`d1fd37f docs(M3.5 G2): sync README and ROADMAP with the shipped fixes`。
@@ -140,6 +142,8 @@ window-rule {
 
 ## 3. 桌面验收清单（逐项做，逐项打勾）
 
+> 2026-10-22 已按本节在 niri 上走完，结论见 §6；本节保留为复跑步骤（换合成器/换机器时照做）。
+
 > 记法：**操作** → **预期**。任何一项不符，按 §5 排查。
 
 ### 3.1 画布与分页（F21）
@@ -220,14 +224,16 @@ window-rule {
 
 把实测结果写回 `docs/GUI_ROADMAP.md` §14（表格已有位置）与本文末尾的"本轮实测"表：
 
-| 指标 | 怎么测 | G2 基线（参考） | G3 实测 |
+| 指标 | 怎么测 | G2 基线（参考） | G3 实测（2026-10-22） |
 |---|---|---|---|
-| `petweave-settings` release 体积 | `ls -l target/release/petweave-settings` | 12.39 MiB | ⬜ |
-| 宿主 release 体积 | `ls -l target/release/petweave` | 7.73 MiB | ⬜（本轮宿主零改动，预期不变） |
-| GUI 常驻 RSS（空闲） | `ps -o rss= -p $(pgrep -f petweave-settings)` | ≈190 MB（软件 GL 回退） | ⬜ |
-| GUI CPU（预览运行中 / 关于页） | `top -p …` 采样 10s | — | ⬜ |
-| 拖拽感知延迟 | 目测 + `RUST_LOG=debug` 看 `SetPlacement` 频率 | 目标 < 50ms | ⬜ |
-| 三宠物同屏宿主 RSS | `ps -o rss= -p $(pgrep -x petweave)` | ≈14.9 MB（单只，scale 2） | ⬜ |
+| `petweave-settings` release 体积 | `ls -l target/release/petweave-settings` | 12.39 MiB | **15.03 MiB**（15,761,152 B） |
+| 宿主 release 体积 | `ls -l target/release/petweave` | 7.73 MiB | **8.01 MiB**（8,399,768 B，宿主零改动，差额来自 G2 后的修复提交） |
+| GUI 常驻 RSS | `/proc/<pid>/status` 的 `VmRSS` | ≈190 MB（软件 GL） | **139.6 MiB**（142,968 kB，Xvfb + llvmpipe） |
+| GUI CPU（布局页，10fps 预览开） | `/proc/<pid>/stat` utime+stime 差 | — | **≈139% 单核**（1110 ticks / 8s，软件光栅） |
+| GUI CPU（关于页，预览关） | 同上 | — | **≈2% 单核**（16 ticks / 8s）→ 预览确实是主要开销 |
+| 宿主空闲 CPU（3 宠物） | 同上 | ~0% | **0 ticks / 10s（≈0%）** ✅ |
+| 宿主 RSS（1 BongoCat + 2 demo） | `VmRSS` | ≈14.9 MB（单只 scale 2） | **17.9 MiB**（18,336 kB） |
+| 拖拽落点精度 | 拖到 (500,200) 后读 `ListPets` | — | **(504,200)**：y 完全一致，x 是 8px 网格吸附结果（500 落在 496/504 中间，取 504）✅ |
 
 ---
 
@@ -253,28 +259,66 @@ window-rule {
 
 ---
 
-## 6. 本轮（2026-10-22）实测
+## 6. 实机验收记录（2026-10-22，niri 26.04）
 
-| 项目 | 结果 |
-|---|---|
-| `cargo build --offline`（全 workspace） | ✅ |
-| `cargo test --offline` | ✅ 186 项全绿（103 host / 38 core / 45 settings） |
-| `cargo clippy --offline --all-targets` | ✅ `petweave-settings` 零告警；其余为 §1 列出的既有告警 |
-| 宿主 GUI 依赖（N01） | ✅ `cargo tree -p petweave` 无 egui/eframe/gtk/winit |
-| 桌面（合成器）实测 | ⬜ **未做**（本轮无桌面会话）→ 下一轮按 §3 执行 |
-| 手工视觉验收（跟手/吸附线/同帧） | ⬜ 同上 |
-| GUI RSS / CPU / 拖拽延迟 | ⬜ 同上，填进 §4 |
-| release 体积 | ✅ `petweave` **8.01 MiB**（8,399,768 B）、`petweave-settings` **15.03 MiB**（15,761,152 B）；面板比 G2 记录 +2.64 MiB 是 D7（GUI 侧跑宿主 runtime）的必然代价 |
+**环境**：niri 26.04，单显示器 `eDP-1` 2560×1600 @1.5（逻辑 1706×1066；宿主内部按 1707×1067 算）。
+宿主 `petweave` 跑在**真实 Wayland 会话**上（三只宠物：1×BongoCat + 2×demo），
+设置面板跑在 `Xvfb 1500×950` 的 **X11 后端**上（沙箱里没有输入注入设备，用 `xdotool` 驱动面板、
+`import` 截面板、`grim` 截真实桌面并逐像素核对宠物位置）。面板与宿主通过同一个 `control.sock` 通信，
+渲染路径与真实使用完全相同；差异只在于面板窗口显示在 Xvfb 而不是用户的 niri 桌面。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| F21 显示器分页 + 真实 rect | ✅ | 画布显示 `eDP-1（1707×1067 @2x）`，显示器矩形 + 100px 标尺 + 中心线；三只宠物框位置与 `ListPets` 的 rect 换算一致（BongoCat 722,941 → 画框 (528,440)，误差 < 1px） |
+| F21 显示器几何变化（热插拔代理） | ✅ | `niri msg output eDP-1 scale 1.0` → `ListOutputs` 变 2560×1600@1x，面板 2s 内把画布重排、下拉标题同步；宠物按新尺寸重算（BongoCat 1148,1474）。恢复 1.5 后全部回到原样 |
+| F22 拖拽 → 实时 `SetPlacement` | ✅ | 拖拽过程中 `ListPets` 已在变（宿主跟手）；松手后 `demo-1` rect = **(504,200,200,120)** |
+| F22 桌面真的跟手 | ✅ | `grim` 截图逐像素测量：蓝宠物出现在逻辑 **(504.0,200.0)**，200×120，与画布/配置/宿主三方一致 |
+| F22 落定写配置（保注释） | ✅ | 文件写入 `anchor = "bottom|left"`、`margin_bottom = 747`、`margin_left = 504`；首行注释 `# G3 验收配置…` 保留；`.bak` 生成（0600） |
+| F23 8px 网格吸附 | ✅ | 两次拖拽的落点均为 8 的倍数（464,176 / 504,200） |
+| F23 边缘吸附 | ✅ | 拖向左边缘 → `snapped.x = 0`，宿主 rect x=0，配置 `margin_left = 0` |
+| F23 吸附参考线 | ✅ | 拖拽中截图可见橙色竖线（x=0 / x=536）与横线（y=176） |
+| F23 吸附开关 | ✅ | 取消勾选「吸附」后 `canvas.snap=false`（kittest 与手工均可切换） |
+| F24 「恢复默认位置」 | ✅ | `demo-1` 的 `anchor`/`margin_*` 全部从文件消失，rect 回到 `[render]` 语义的底部居中 **(754,931)** |
+| F24 「放到底部居中」 | ✅ | 对已显式 `bottom|right,40/40` 的 `demo-2` 执行后，配置里**一个 placement 键都不剩**（因为 `[render]` 本身就是底部 16px），rect → (784,911) |
+| F30 列表缩略图 | ✅ | 三行缩略图分别是睡眠帧 BongoCat / 蓝色 demo / 黄色 demo，与桌面同帧 |
+| F30 参数页动画预览 | ✅ | 右上角 320×320 预览显示所选宠物，与桌面同帧；点击可强制刷新 |
+| F30 画布上的宠物图 | ✅ | 画布框内画的是宠物自身渲染（BongoCat 可辨认、demo 颜色正确） |
+| F31 保存即热重载 | ✅ | 保存后面板状态栏「已保存并通知宿主重新加载…（备份…）」，宿主 `Reload` 后 rect 与文件一致 |
+| F33 宿主离线可编辑 | ✅ | 先开面板后开宿主：顶栏「宠物未运行」、画布用「未知显示器（示意 1920×1080）」+ 黄色提示；启动宿主后 **6s 内**自动变「已连接（3 只宠物）」并把画布换成真实显示器 |
+| F34 关面板不影响宠物 | ✅ | 每次驱动脚本结束都会 kill 面板，宿主继续动画；最终 `grim` 截图三只宠物仍在 |
+| N02 宿主空闲 CPU | ✅ | 3 宠物空闲 10s = 0 ticks |
+
+**未覆盖**：
+
+- 真实「拔掉一块显示器」：本机只有一块屏，用「改变缩放/逻辑尺寸」代理（几何变化走同一条 `ListOutputs` 通路）。
+- 面板在真实 niri 桌面上的窗口行为（平铺/浮动规则、HiDPI 下的 `pixels_per_point`）。
+- IME 中文输入（G5 事项）。
+- 面板与宿主**同时**在真实 Wayland 会话里长跑的内存曲线（面板只跑了 Xvfb）。
 
 ---
 
-## 7. 下一轮建议顺序
+## 7. 实机验收发现并修复的问题
 
-1. §1 自动化回归（5 分钟，先确认代码状态没被动过）。
-2. §3.1 → §3.2 → §3.3（画布与拖拽是 G3 的核心，先跑通这三节）。
-3. §3.4 → §3.5（表单/预设/预览）。
-4. §3.6 → §3.7（热插拔与进程边界）。
-5. 把 §4 的数值补进 `docs/GUI_ROADMAP.md` §14 与本文件 §6，然后把 GUI_ROADMAP 里 G3 的
-   "（待桌面实测）"改成"✅ 完成"，并更新 §15 变更记录（v0.8）。
-6. 接着做 **G4**：诊断页（F40，把 `doctor` 从 `main.rs` 抽成可复用模块）、托盘「设置…」（F41）、
-   `wgpu` 回退（N04）、PKGBUILD/Nix 产物。
+1. **拖拽起点偏移（已修，`ui/layout.rs`）**：原来在 `response.drag_started()` 那一帧用**当前指针位置**
+   算抓取偏移，而 egui 要等指针移动超过拖拽阈值才报 `drag_started`，于是宠物会按「按下到触发之间的位移」
+   整体平移（合成指针一次跳 43px → 宠物直接偏 ~43px；真实鼠标约 6px，属于看得见的轻微跳动）。
+   改成用 `i.pointer.press_origin()`（按下点）计算抓取偏移后，实测落点与预期完全一致。
+2. **画布背景抢占按下事件（防御性修改）**：画布原先用 `Sense::click_and_drag()` 分配，
+   与叠在上面的宠物框抢同一次 press。虽然实机复测没有复现"点不动"，但画布本身不需要点击/拖拽语义，
+   改成 `Sense::hover()` 后交互只归宠物框，语义更干净。
+3. **画布交互目前只有手工/脚本验收（待补自动化）**：`egui_kittest` 能通过 `input_mut()` 注入指针事件，
+   但画布矩形依赖窗口布局，做起来要先把「画布几何」暴露成可测函数；已列进 G4 顺带补，优先级低于功能。
+4. **`ListOutputs.scale` 是整数（已知限制，未改）**：sctk 的 `OutputInfo.scale_factor` 是 `i32`，
+   scale 1.5 会被报成 2，于是画布下拉显示 `@2x`。画布几何按**逻辑像素**计算，不受影响；
+   要显示真实小数缩放需要另找协议来源，留到 G4 诊断页一起处理。
+
+## 8. 后续（G4）建议顺序
+
+G3 已验收完成（§6），下一步是 **G4**：
+
+1. 诊断页（F40）：把 `doctor` 从 `main.rs` 抽成可复用模块，面板里内嵌显示（顺便解决 §7 第 3 条的整数 scale 展示）。
+2. 托盘「设置…」（F41）：`HostCommand` 增加 spawn `petweave-settings`。
+3. `wgpu` 回退（N04）：`eframe` 打开 wgpu feature + `--renderer` 参数；软件 GL 下预览 10fps 的 CPU 开销（§4）
+   正是这条的动机之一。
+4. 打包：PKGBUILD / Nix flake 增加 `petweave-settings` 产物；README 安装章节。
+5. 每次都重跑 §1 的自动化回归（186 项）与本文 §4 的数值表。

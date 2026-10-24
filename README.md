@@ -412,7 +412,6 @@ crates/
   petweave-settings/ 设置面板（独立二进制，egui/eframe；不进入宿主依赖）
 assets/bongocat/   内置 BongoCat 素材（PNG 帧 + sleeping SVG，MIT，署名见目录内 README）
 packages/          预置角色包：bongo-sprite（声明式 BongoCat）/ blinky（网格示例）/ lua-demo（Lua 示例）
-                   / krill-pet、puro-pet（原图直用的按键桌宠：交替姿势 + 1/2/3 表情 + 上跳）
 docs/              技术栈分析 + 实现计划 + 图形界面计划 + 角色包教程 + Live2D 路线 + 社区列表 + 配图
 petweave.toml.example
 ```

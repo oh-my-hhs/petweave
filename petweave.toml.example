@@ -80,7 +80,6 @@ kind = "bongo"
 anchor = "bottom|left"
 margin_left = 32
 margin_bottom = 24
-
 # Kind-specific options live in [pets.bongo].
 [pets.bongo]
 assets_dir = "assets/bongocat"

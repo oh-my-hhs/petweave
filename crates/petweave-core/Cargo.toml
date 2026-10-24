@@ -8,6 +8,7 @@ description = "PetWeave core: config, events, pet trait and render types shared 
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 thiserror.workspace = true

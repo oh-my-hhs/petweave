@@ -78,6 +78,9 @@ pub struct SettingsApp {
     /// When the layout page last asked the host for `ListOutputs`/`ListPets`
     /// (monitor hotplug + pets dragged on the desktop, F21).
     pub last_control_refresh: Instant,
+    /// Temporary evdev recorder for the dynamic keycode-list editor.
+    pub key_capture: Option<petweave::platform::input::KeyCapture>,
+    pub capturing_option: Option<String>,
 }
 
 impl SettingsApp {
@@ -115,7 +118,31 @@ impl SettingsApp {
             preview: PreviewCache::new(),
             canvas: CanvasState::default(),
             last_control_refresh: Instant::now(),
+            key_capture: None,
+            capturing_option: None,
         })
+    }
+
+    pub fn start_key_capture(&mut self, key: &str) {
+        match petweave::platform::input::KeyCapture::start() {
+            Ok(capture) => {
+                self.key_capture = Some(capture);
+                self.capturing_option = Some(key.to_string());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
+
+    pub fn stop_key_capture(&mut self) {
+        self.key_capture = None;
+        self.capturing_option = None;
+    }
+
+    pub fn poll_key_capture(&mut self) -> Option<(String, u32)> {
+        let key = self.capturing_option.clone()?;
+        let code = self.key_capture.as_ref()?.try_recv()?;
+        Some((key, code))
     }
 
     // --- derived state -----------------------------------------------------
@@ -486,6 +513,9 @@ impl SettingsApp {
             } else {
                 ctx.request_repaint_after(PREVIEW_INTERVAL);
             }
+        }
+        if self.key_capture.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(50));
         }
 
         // Monitor hotplug and pets dragged on the desktop (F21): the layout

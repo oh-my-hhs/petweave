@@ -188,6 +188,42 @@ pub struct InputReader {
     _handle: thread::JoinHandle<()>,
 }
 
+/// Temporary keycode recorder used by the settings GUI. It shares the same
+/// keyboard discovery/filtering rules as the host reader, but returns raw
+/// EV_KEY codes through a bounded lifetime channel.
+pub struct KeyCapture {
+    rx: std::sync::mpsc::Receiver<u32>,
+    stop: Arc<AtomicBool>,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl KeyCapture {
+    pub fn start() -> Result<Self, String> {
+        let devices = scan_keyboards();
+        if devices.is_empty() {
+            return Err("未发现可读取的键盘设备，请检查 /dev/input 权限".into());
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::new();
+        for dev in devices {
+            let tx = tx.clone();
+            let stop = stop.clone();
+            handles.push(thread::spawn(move || capture_loop(dev, tx, stop)));
+        }
+        Ok(Self { rx, stop, handles })
+    }
+
+    pub fn try_recv(&self) -> Option<u32> { self.rx.try_recv().ok() }
+}
+
+impl Drop for KeyCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for handle in self.handles.drain(..) { let _ = handle.join(); }
+    }
+}
+
 impl InputReader {
     /// Start the manager loop (initial scan + periodic rescan + readers).
     pub fn start(cfg: &InputConfig, tx: calloop::channel::Sender<Event>) -> Self {
@@ -329,4 +365,22 @@ fn read_loop(dev: KeyboardDevice, tx: calloop::channel::Sender<Event>, stop: Arc
         }
     }
     tracing::debug!("input reader for {} stopped", dev.path.display());
+}
+
+fn capture_loop(dev: KeyboardDevice, tx: std::sync::mpsc::Sender<u32>, stop: Arc<AtomicBool>) {
+    let Ok(fd) = open(&dev.path, OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC, Mode::empty()) else { return };
+    let mut buf = [0u8; 24];
+    while !stop.load(Ordering::Relaxed) {
+        let mut fds = [PollFd::new(fd.as_fd(), PollFlags::POLLIN)];
+        if poll(&mut fds, 200u16).is_err() { break; }
+        match nix::unistd::read(fd.as_fd(), &mut buf) {
+            Ok(n) if n == buf.len() => {
+                let ev = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const InputEventRaw) };
+                if ev.type_ == EV_KEY && ev.value == 1 && tx.send(ev.code as u32).is_err() { break; }
+            }
+            Ok(_) => {}
+            Err(Errno::EAGAIN) => {}
+            Err(_) => break,
+        }
+    }
 }

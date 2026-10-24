@@ -34,6 +34,7 @@
 //! `pet.offset` — the runtime has no built-in bob.
 
 use std::collections::HashMap;
+use serde_json::Value as JsonValue;
 use std::time::{Duration, Instant};
 
 use petweave_core::events::{Event, InputEvent};
@@ -77,6 +78,8 @@ pub struct SpritePet {
     /// Set by the Lua host when the package's `main.lua` sets `OWN_KEYS`:
     /// the script owns key state, so this sprite must not map keys at all.
     lua_decl: bool,
+    left_keys: Option<std::collections::HashSet<u32>>,
+    right_keys: Option<std::collections::HashSet<u32>>,
 
     current: String,
     frame_idx: usize,
@@ -135,6 +138,10 @@ pub struct SpriteOptions {
 impl SpritePet {
     /// Load from a package directory (manifest + sheets).
     pub fn new(manifest: &Manifest, dir: &Path) -> Result<Self, String> {
+        Self::new_with_options(manifest, dir, &std::collections::BTreeMap::new())
+    }
+
+    pub fn new_with_options(manifest: &Manifest, dir: &Path, options: &std::collections::BTreeMap<String, JsonValue>) -> Result<Self, String> {
         let opts = SpriteOptions::from_manifest(manifest)?;
         // A package without animations is a script-only Lua pet; the Lua
         // host may still want to drive it later, so don't fail here.
@@ -155,6 +162,13 @@ impl SpritePet {
         }
         let rest =
             idle.clone().or_else(|| animations.keys().next().cloned()).unwrap_or_default();
+        let left_keys = key_list(options, "keys.left");
+        let right_keys = key_list(options, "keys.right");
+        if let (Some(left), Some(right)) = (&left_keys, &right_keys) {
+            if left.iter().any(|code| right.contains(code)) {
+                tracing::warn!("role package {:?} declares overlapping keys.left/keys.right; right wins", manifest.meta.name);
+            }
+        }
         Ok(Self {
             id: PetId(format!("sprite:{}", manifest.meta.name)),
             animations,
@@ -170,6 +184,8 @@ impl SpritePet {
             padding: opts.padding.min(1024) as i32,
             pixel_offset: (0, 0),
             lua_decl: false,
+            left_keys,
+            right_keys,
             current: current.clone(),
             frame_idx: 0,
             acc: 0.0,
@@ -369,7 +385,7 @@ impl SpritePet {
             self.last_any = true;
             return self.play(anim);
         }
-        let paw = paw_for_keycode(ev.code);
+        let paw = self.configured_paw(ev.code);
         if self.held.iter().any(|(k, _)| *k == ev.code) {
             return false; // auto-repeat
         }
@@ -540,6 +556,11 @@ impl SpriteOptions {
     }
 }
 
+fn key_list(options: &std::collections::BTreeMap<String, JsonValue>, key: &str) -> Option<std::collections::HashSet<u32>> {
+    let values = options.get(key)?.as_array()?;
+    Some(values.iter().filter_map(|value| value.as_u64().and_then(|n| u32::try_from(n).ok())).collect())
+}
+
 /// Decode every referenced sheet once.
 fn decode_sheets(manifest: &Manifest, dir: &std::path::Path) -> Result<HashMap<String, Frame>, String> {
     let mut sheets: HashMap<String, Frame> = HashMap::new();
@@ -638,6 +659,16 @@ impl SpritePet {
         (self.surface.0.saturating_sub(self.padding as u32 * 2),
          self.surface.1.saturating_sub(self.padding as u32 * 2))
     }
+
+    fn configured_paw(&self, code: u32) -> Paw {
+        if self.right_keys.as_ref().is_some_and(|keys| keys.contains(&code)) {
+            Paw::Right
+        } else if self.left_keys.as_ref().is_some_and(|keys| keys.contains(&code)) {
+            Paw::Left
+        } else {
+            paw_for_keycode(code)
+        }
+    }
 }
 
 impl Pet for SpritePet {
@@ -665,11 +696,11 @@ impl Pet for SpritePet {
                 }
             }
             Event::Input(ev) if ev.pressed => {
-                let Some(reaction) = self.reaction_for(paw_for_keycode(ev.code)) else {
+                let Some(reaction) = self.reaction_for(self.configured_paw(ev.code)) else {
                     return false; // no reaction declared: nothing to show
                 };
                 let until = Instant::now() + self.reaction_duration(reaction);
-                match paw_for_keycode(ev.code) {
+                match self.configured_paw(ev.code) {
                     Paw::Left => self.left_until = Some(until),
                     Paw::Right => self.right_until = Some(until),
                 }
@@ -905,6 +936,7 @@ mod tests {
                 key_left: Some("paw".into()),
                 ..Reactions::default()
             },
+            options: Vec::new(),
         };
         (dir, manifest)
     }
@@ -1050,6 +1082,7 @@ mod tests {
                 idle: Some("idle".into()),
                 ..Reactions::default()
             },
+            options: Vec::new(),
         };
         let pet = SpritePet::new(&manifest, Path::new(".")).expect("load with scale");
         assert_eq!(pet.surface, (264, 110));
@@ -1205,6 +1238,7 @@ mod tests {
                 key_right: Some("right".into()),
                 ..Reactions::default()
             },
+            options: Vec::new(),
         };
         (dir, manifest)
     }
@@ -1359,4 +1393,3 @@ mod tests {
         assert_eq!(pet.current, "idle");
     }
 }
-

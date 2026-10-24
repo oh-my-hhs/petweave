@@ -114,6 +114,43 @@ petweave install my-pet.petweave              # 从包文件重装（验证包�
 
 ## 2. 清单字段全参考
 
+### `[options]` 可配置项声明
+
+角色包可以在清单中声明用户可编辑的选项。每项使用 `[[options]]`，`key` 在包内唯一：
+
+```toml
+[[options]]
+key = "hold_ms"
+label = "长按时长（毫秒）"
+type = "int"
+default = 350
+min = 0
+max = 5000
+description = "按住多久后进入长按状态"
+```
+
+支持的类型为 `string`、`int`、`float`、`bool`、`keycode`、`enum` 和 `keycode-list`。
+用户在 `petweave.toml` 的对应 `[[pets]]` 中覆盖：
+
+```toml
+[[pets]]
+kind = "lua"
+package = "my-pet"
+options = { hold_ms = 500 }
+```
+
+设置面板中 `keycode-list` 会提供「读取键码」按钮。点击后临时读取当前用户可访问的
+`/dev/input/event*` 键盘设备；按下实体键会把 Linux `EV_KEY` 数值加入列表并自动去重，
+再次点击「停止读取」结束录入。没有输入设备权限时，面板会提示运行 `petweave doctor --apply`。
+
+未声明的 key、类型错误、越界值和非法枚举都会在角色包加载/配置校验时报告；省略 `options`
+保持旧配置行为。Lua 包通过只读 `config.get(key)`、`config.keys()` 和 `config.number(key)`
+读取最终值（默认值已与用户覆盖合并）。
+
+配置热重载时，Lua 宿主会先将所有已声明选项恢复为清单中的默认值，再应用当前用户覆盖，
+然后调用可选的 `on_config_changed()`。脚本若把选项缓存为查找表（例如键码到表情的映射），
+应在该回调中重建缓存；不要只在文件加载时读取一次 `config`。
+
 ### `[meta]`
 
 | 字段 | 必填 | 说明 | 默认 |
@@ -241,6 +278,25 @@ function on_pointer(x, y, pressed, button)
         pet.speak("pet me!")
     end
 end
+
+-- 配置变化后重新读取键码选项；keycode-list 在 Lua 中是数组表。
+local pattern = {}
+local function rebuild_pattern()
+    pattern = {}
+    for i = 0, 2 do
+        local keys = config.get("pattern." .. i)
+        if type(keys) == "table" then
+            for _, code in ipairs(keys) do
+                pattern[code] = "pattern" .. i
+            end
+        end
+    end
+end
+
+rebuild_pattern()
+function on_config_changed()
+    rebuild_pattern()
+end
 ```
 
 ### 脚本 API 一览
@@ -327,12 +383,6 @@ end
 - `packages/bongo-sprite/` — 用声明式包复刻 BongoCat 爪击（大图缩放 + 左右爪反应），格式的"吃狗粮"验证
 - `packages/blinky/` — 最小 2×2 网格示例（Codex 风格网格 + idle 循环 + 按键反应）
 - `packages/lua-demo/` — Lua 脚本示例（按键说话 + 动画切换）
-- `packages/krill-pet/`、`packages/puro-pet/` — **原图直用**的成品包：六张 800×500 原图分别作为
-  `basic/left/right/pattern0/pattern1/pattern2`（每张整图就是单格精灵表），按 140px 高等比显示为
-  224x140、内容贴左下角，尺寸固定不变。`main.lua` 声明 `OWN_KEYS` 自己管键：**任意键**（键盘上除
-  1/2/3 的键，左右两侧、功能键、方向键都算）每按一次在 left/right 间交替，按住停留，松开回
-  basic；1/2/3 键显示 pattern0/1/2 并按住停住。这是最简的"按键轮切 + 停手恢复"脚本，可作为
-  类似包的地基。
 
 ## 状态与下一步
 
@@ -341,7 +391,6 @@ end
   `press` 语义 + 交替 + 抖动、逐键反应）
 - ✅ Lua 脚本运行时（mlua 沙箱：白名单 API、指令预算、事件 on_key/on_tick/on_system/on_fullscreen/on_scroll、动作 play/speak/size/offset/held/bump、查询 sys.*；`OWN_KEYS`/`OWN_PIXELS` 脚本接管按键与摆放）
 - ✅ SVG 渲染（resvg）：BongoCat 睡眠帧已用官方 SVG 素材栅格化，替代占位帧
-- ✅ 参考包端到端：`krill-pet` / `puro-pet` 的交替、按住停留、表情键与尺寸固定在宿主里由测试
-  直接驱动真实按键验证（见 `docs/ROADMAP.md` M2.6）
-- ⏳ 可配置键位/长按时长：目前写在各包 `main.lua` 常量里，规划见 `docs/ROADMAP.md` M2.5
+- ✅ 可配置键位与输入图案：清单 `[[options]]` 支持 `keycode`/`keycode-list`，设置面板可读取
+  Linux `EV_KEY` 键码；Lua 通过 `config.*` 读取，并可用 `on_config_changed()` 应用热重载
 - ⏳ 签名与社区商店：包格式预留 `signature` 位置，随社区工具落地

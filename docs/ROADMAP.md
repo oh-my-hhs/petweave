@@ -1,7 +1,7 @@
 # PetWeave 功能实现计划表
 
 > 依据 `docs/TECH_STACK.md` 的里程碑划分。`- [x]` 表示已完成，`- [ ]` 表示未完成。
-> 更新日期：2026-10-22（M3 完成；M3.5 进行中：G0/G1/G2/G3 已落地，G3 已在 niri 实机验收通过，详见 `docs/GUI_ROADMAP.md`）
+> 更新日期：2026-10-24（M2.5 配置通道已落地，示例包仍待补充；M3.5 G0–G4 已落地）
 
 ## 跨模块健壮性评审
 
@@ -16,11 +16,11 @@
 | M0 项目骨架 | ✅ 完成 | 编译通过、单测通过、niri 上实测可显示 |
 | M1 BongoCat 移植 | ✅ 完成 | 爪击动画/热插拔/全屏隐藏/多显示器/睡眠/热重载/系统感知/doctor/单例 |
 | M2 SDK / 角色包 | ✅ 完成 | 包格式/声明式精灵宠物/Lua 沙箱运行时/CLI/示例包/SVG 渲染 |
-| M2.5 可配置按键/图案 | ⏳ 规划 | 包声明配置项 + 改 config 生效（见下） |
-| M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS`；两个参考包端到端测试通过 |
+| M2.5 可配置按键/图案 | 🔶 进行中 | 清单选项、配置覆盖、Lua 热重载及 GUI 键码录入已落地；仓库内示例包与长按档位待补 |
+| M2.6 Lua 宿主按键与尺寸 | ✅ 完成 | `[[reactions]]` 解析、`[pet]` 连字符键名、`pet.size` 语义、`OWN_KEYS` |
 | M2.7 尺寸与摆放契约（GUI 前置） | ✅ 完成 | 尺寸优先级 `[[pets]]` > 宠物 > `[render]`、等比缩放不拉伸、删除 anchor/bob、`pet.offset(dx,dy)` + `padding`；`Pet::resize_to` / `Runtime::fit_frames` 让配置尺寸真正缩放内容 |
 | M3 交互升级 | ✅ 完成 | 指针/拖拽/物理/点击穿透/托盘/多宠物共存；设置面板由 M3.5 G2 完成 |
-| M3.5 图形设置界面 | 🔶 进行中 | G0 多宠物配置 ✅、G1 控制通道 ✅、G2 设置面板 MVP ✅、G3 布局画布 + 实时预览 ✅（**2026-10-22 已在 niri 实机验收**，记录见 [`docs/VERIFY_M3.5-G3.md`](VERIFY_M3.5-G3.md) §6）；G4 诊断/分发待做。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
+| M3.5 图形设置界面 | 🔶 进行中 | G0–G4 已落地；G3 于 2026-10-22 在 niri 实机验收，G5 打磨待定。**详细路线见 [`docs/GUI_ROADMAP.md`](GUI_ROADMAP.md)** |
 | M4 深度集成 | ⏳ 未开始 | Live2D 路线已设计（`docs/LIVE2D.md`） |
 
 ---
@@ -117,7 +117,7 @@
 - [x] G3 布局画布与实时预览：按显示器分页拖拽定位（8px 网格 + 边/中心线吸附、可关）+ 缩略图/动画预览
       （复用宿主 `Runtime`/`Frame` 渲染，~10fps，仅显示时运行）+ 表单与画布双向同步 + 「放到底部居中/恢复默认位置」预设；
       拖拽实时 `SetPlacement`、松手写配置；显示器热插拔重建页面
-      （`canvas`/`preview`/`ui::layout`；34 项设置库测试 + 13 项集成测试；实机验收记录见 `docs/VERIFY_M3.5-G3.md` §6）
+      （`canvas`/`preview`/`ui::layout`；34 项设置库测试 + 13 项集成测试；已在 niri 实机验收）
 - [x] G4 诊断与分发：内嵌诊断页、托盘「设置…」、PKGBUILD/Nix 产物、README 章节
 - [x] 入口：`petweave settings`（exec 同目录/`PATH` 的 `petweave-settings`）+ 独立二进制（缺失时给出构建/安装提示）
 - [x] 托盘「设置…」入口（G4）
@@ -148,46 +148,47 @@
 
 ## M2.5 可配置按键与输入图案（proposal）
 
-> 背景：包内角色（如 `packages/krill-pet`、`packages/puro-pet`）已具备
-> `pattern0/1/2` 三类"按键特效"素材：按 1/2/3 键分别显示 `pattern0/1/2`，按住停住，
-> 松手回 `basic`。但**哪些物理按键算"焦点键"(left/right 交替)、哪些键触发哪个 pattern、
-> 长按多久开始抖动、抖动幅度多大**目前都写死在包脚本里（`main.lua` 顶部的
-> `KEYS_LEFT`/`KEYS_RIGHT`/`PATTERN`/`SHOW_H`/`BOB_PX`/`HOLD_SEC` 常量），用户无法改。
-> 目标：**包声明可配置项及默认值 → 用户只改 config**，宿主与包都不需要重新打包。
+> 目标：角色包声明可配置项及默认值，用户通过配置文件或设置面板覆盖；
+> Lua 脚本在配置热重载后重建自身的按键映射。仓库目前不附带按键表情角色包。
 
-- [ ] M2.5-1 包清单声明配置项：`[[pets.options]]`（或 `[options]`）数组，每项
+- [x] M2.5-1 包清单声明配置项：`[[options]]` 数组，每项
       `key`（命名空间内唯一）、`label`（中文说明，GUI 表单标题）、`type`
       （`string|int|float|bool|keycode|enum|keycode-list`）、`default`、`min`/`max`、
       `enum`（可选值 + 显示名）、`description`。`petweave-core::manifest` 解析 +
       类型校验（默认值必须满足自身约束），错误信息点名 `options.<key>`。
-- [ ] M2.5-2 用户配置覆盖：`[[pets]].options`（`[pets.options]` 表）按 key 覆盖包默认值；
-      `Config::validate()` 负责校验（单点数来源，GUI 复用），未声明的 key 报错而不是静默丢弃；
+- [x] M2.5-2 用户配置覆盖：每个 `[[pets]]` 使用 `options = { "key" = value }` 按 key 覆盖包默认值；
+      `Config::validate()` 校验通用配置，加载角色包后由清单 schema 校验选项；未声明的 key 报错而不是静默丢弃；
       `[[pets]]` 省略该表时行为与现在完全一致（向后兼容）。
-- [ ] M2.5-3 运行时下发：`PetConfig` 新增 `options`（已落地的通用通道见下），
+- [x] M2.5-3 运行时下发：`PetConfig` 新增 `options`（已落地的通用通道见下），
       `<pets>.options` → `PetConfig.options` → Lua `config.*`；Lua 侧只暴露包声明的 key，
       读出值已是"默认值 + 用户覆盖"后的最终值。
-- [ ] M2.5-4 按键映射可配置：包用 `type = "keycode-list"` 声明 `keys.left` / `keys.right`
+- [x] M2.5-4 按键映射可配置：包用 `type = "keycode-list"` 声明 `keys.left` / `keys.right`
       （EV_KEY 码），未配置时回退到内置物理左右手映射；按"键码 → 槽位（left/right）"建表，
       同一物理键在两端都出现时以右/左声明顺序为准并给出告警。
 - [ ] M2.5-5 长按与 pattern 档位：`hold_ms`（按下多久算长按）、`pattern.cycle_ms`、
-      `pattern.interval_ms`（长按后 pattern0/1/2 轮流显示的速度）作为配置项，
-      替代目前写死在 `main.lua` 里的 `HOLD_MS = 0.35` 等常量。
-- [ ] M2.5-6 面向 Lua 的读取 API：`config.get(key)` / `config.keys()` / `config.number(key)`，
+      `pattern.interval_ms`（长按后 pattern0/1/2 轮流显示的速度）作为角色包配置项。
+- [x] M2.5-6 面向 Lua 的读取 API：`config.get(key)` / `config.keys()` / `config.number(key)`，
       沙箱内只读；配置文件热重载时重新下发（`Pet::reload` → `config` 刷新），不重启进程。
-- [ ] M2.5-7 GUI 表单自动生成：设置面板按清单 `options` 渲染控件（类型 → 控件，
+- [x] M2.5-7 GUI 表单自动生成：设置面板按清单 `options` 渲染控件（类型 → 控件，
       `label/description` → 文案），用户"改 config 即完成配置"，不写 TOML。
-- [ ] M2.5-8 文档与示例：`docs/PACKAGES.md` 新增"可配置项"章节；两个示例包把
-      按键映射/长按时长提升为可配置项，`petweave.toml.example` 给出覆盖示例。
+- [ ] M2.5-8 仓库内示例：`docs/PACKAGES.md` 已补充可配置项教程；仍需加入可分发的
+      按键表情示例包，并以实际声明的选项展示配置覆盖。
 - [ ] M2.5-9 校验与迁移测试：未知 key、类型不符、越界、枚举非法值、旧配置缺省全覆盖。
 
-> 落地顺序建议：M2.5-1/2/3 为通道（一次性打通，所有包受益）→ 4/5/6 让现有包"零改包"可配
-> → 7 交给 M3.5 GUI → 8/9 收尾。在通道落地前，包内脚本的常量（`KEY_LEFT`/`KEY_RIGHT`/
-> `HOLD_MS`/`PATTERN_STEP`）就是当前唯一可调点，修改需要重新打包。
+> 通用配置通道与设置面板已落地；剩余工作是可分发的示例包、长按行为和完整校验回归。
+
+### M2.5 实施决策（2026-10-24）
+
+- 包清单使用 `[[options]]`；用户配置使用每个 `[[pets]]` 下的 `options = { "key" = value }`。
+- 选项值采用字符串、整数、浮点、布尔和键码数组；`enum` 仍以字符串保存。
+- `Config::validate()` 负责结构与基础类型校验；角色包加载后用清单 schema 校验未知 key、范围和枚举。
+- Lua 配置热重载只更新只读 `config` 表并调用可选 `on_config_changed()`，不重新执行脚本，保留脚本局部状态。
+- 缺失 `keys.left/right` 时回退内置物理左右手映射；冲突以右侧声明优先并记录 warning。
 
 ## M2.6 Lua 宿主按键与尺寸（已解决，结论写入文档）
 
-> 做参考包 `packages/krill-pet` / `packages/puro-pet` 时，包内行为"没有按预期运行"。
-> 排查结论：**宿主 Lua 状态本身没有丢失**，问题出在三处契约不一致，现已修复。
+> 实现 Lua 按键行为时，曾发现包内行为没有按预期运行。排查结论：
+> **宿主 Lua 状态本身没有丢失**，问题出在三处契约不一致，现已修复。
 
 - [x] M2.6-1 `[[reactions]]` 解析不到：`[[reactions]]` 数组被反序列化成 `keys` 字段，
   而代码读的是 `reactions.extra`，于是逐键反应表永远为空。已改为自定义 `Deserialize`：
@@ -236,8 +237,8 @@
 - [x] anchor 保持为 layer-shell 实现细节：配置仍用 `anchor/margin_*`，GUI 层翻译为
       x/y + 对齐方式，不新增绝对坐标键（Q4A）。
 - [x] `petweave doctor -c <config>`：诊断可针对任意配置文件（GUI 诊断页复用）。
-- [x] 包体回归：`packages/` 下 bongo-sprite / blinky / lua-demo / krill-pet / puro-pet
-      全部按新模型预览通过。
+- [x] 包体回归：`packages/` 下 bongo-sprite / blinky / lua-demo
+      按新模型预览通过。
 
 ## 备注
 
@@ -262,7 +263,7 @@
   真实 GPU 待复测）；面板 CPU：布局页 10fps 预览 **≈139% 单核**、关于页（无预览）**≈2% 单核**；
   宿主 3 宠物（1 BongoCat + 2 demo）RSS **17.9MiB**、空闲 **0% CPU**；拖拽落点与 `grim` 逐像素测量一致（504,200）。
   验收中发现并修复：抓取偏移用了 `drag_started` 帧指针导致宠物跳一个阈值距离（改用 `press_origin()`）、
-  画布背景 sense 与宠物框抢 press（改 `hover`）。完整记录见 [`docs/VERIFY_M3.5-G3.md`](VERIFY_M3.5-G3.md) §6。
+  画布背景 sense 与宠物框抢 press（改 `hover`）。
 - **G3 体积基线**（release，strip）：`petweave` **8.01MiB**（8,399,768 B；宿主本轮零改动，差额来自 G2 之后的两个修复提交）、
   `petweave-settings` **15.03MiB**（15,761,152 B，较 G2 的 12.39MiB +2.64MiB）——预览按 D7 在 GUI 侧调用宿主 runtime，
   resvg/mlua/image 因此进入面板二元；宿主体积与依赖树不受影响（N01 仍满足）。GUI 常驻 RSS 待桌面复测。

@@ -459,11 +459,13 @@ fn load_pet(cfg: &PetConfig, assets: &mut AssetCache) -> Result<Box<dyn Pet>, St
         "bongo" => Ok(Box::new(BongoPet::new(cfg, assets)?)),
         "sprite" => {
             let (manifest, dir) = load_package(&cfg.package)?;
-            Ok(Box::new(SpritePet::new(&manifest, &dir)?))
+            let options = manifest.resolve_options(&cfg.options).map_err(|e| e.to_string())?;
+            Ok(Box::new(SpritePet::new_with_options(&manifest, &dir, &options)?))
         }
         "lua" => {
             let (manifest, dir) = load_package(&cfg.package)?;
-            Ok(Box::new(LuaPet::new(&manifest, &dir)?))
+            let options = manifest.resolve_options(&cfg.options).map_err(|e| e.to_string())?;
+            Ok(Box::new(LuaPet::new_with_options(&manifest, &dir, &options)?))
         }
         other => Err(format!("unknown pet kind {other:?}")),
     }
@@ -515,8 +517,8 @@ mod tests {
     #[test]
     fn configured_size_overrides_pet_size_and_scales_content() {
         let text = format!(
-            "{}[[pets]]\nid = \"puro\"\nkind = \"lua\"\npackage = \"puro-pet\"\nwidth = 448\nheight = 280\n\n\
-             [[pets]]\nid = \"puro-h\"\nkind = \"lua\"\npackage = \"puro-pet\"\nwidth = 448\n",
+            "{}[[pets]]\nid = \"lua-a\"\nkind = \"lua\"\npackage = \"lua-demo\"\nwidth = 128\nheight = 128\n\n\
+             [[pets]]\nid = \"lua-b\"\nkind = \"lua\"\npackage = \"lua-demo\"\nwidth = 128\n",
             "[render]\nwidth = 64\nheight = 64\n"
         );
         let config = cfg(&text);
@@ -528,8 +530,8 @@ mod tests {
             return;
         }
         let sizes: Vec<_> = rt.slots().iter().map(|s| s.surface_size()).collect();
-        assert_eq!(sizes[0], (448, 280), "the configured box wins");
-        assert_eq!(sizes[1], (448, 280), "one side keeps the 8:5 aspect");
+        assert_eq!(sizes[0], (128, 128), "the configured box wins");
+        assert_eq!(sizes[1], (128, 128), "one side keeps the package aspect");
         rt.fit_frames();
         for slot in rt.slots() {
             let f = &slot.frame;
@@ -611,18 +613,18 @@ mod tests {
     #[test]
     fn inheriting_size_returns_to_the_lua_package_size() {
         let sized = cfg(
-            "[[pets]]\nid = \"puro\"\nkind = \"lua\"\npackage = \"puro-pet\"\nwidth = 448\nheight = 280\n",
+            "[[pets]]\nid = \"lua-demo\"\nkind = \"lua\"\npackage = \"lua-demo\"\nwidth = 128\nheight = 128\n",
         );
-        let base = cfg("[[pets]]\nid = \"puro\"\nkind = \"lua\"\npackage = \"puro-pet\"\n");
+        let base = cfg("[[pets]]\nid = \"lua-demo\"\nkind = \"lua\"\npackage = \"lua-demo\"\n");
         let mut rt = Runtime::new(&sized);
         if !rt.load_errors().is_empty() {
             eprintln!("skipping: package not resolvable: {:?}", rt.load_errors());
             return;
         }
         let intrinsic = Runtime::new(&base).slots()[0].surface_size();
-        assert_ne!(intrinsic, (448, 280), "fixture uses a non-default size");
+        assert_ne!(intrinsic, (128, 128), "fixture uses a non-default size");
         let outcome = rt.apply(&base);
-        assert_eq!(outcome.resized, ["puro"]);
+        assert_eq!(outcome.resized, ["lua-demo"]);
         assert_eq!(
             rt.slots()[0].surface_size(),
             intrinsic,

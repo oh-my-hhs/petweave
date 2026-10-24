@@ -28,9 +28,11 @@
 //! are present `[[pets]]` wins and `[pet]` is ignored (with a warning).
 //! `petweave config migrate` rewrites the legacy form in place.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::Error;
 
@@ -227,6 +229,8 @@ pub struct PetInstance {
     pub color: String,
     /// BongoCat-specific options.
     pub bongo: BongoConfig,
+    /// User overrides for options declared by the selected role package.
+    pub options: BTreeMap<String, Value>,
 
     // --- placement group (inherits from [render]) -------------------------
     /// Surface width; 0 / unset = the pet's preferred size.
@@ -361,6 +365,7 @@ impl Default for PetInstance {
             package: String::new(),
             color: "#ff6699".to_string(),
             bongo: BongoConfig::default(),
+            options: BTreeMap::new(),
             width: None,
             height: None,
             layer: None,
@@ -455,6 +460,8 @@ pub struct PetConfig {
     pub package: String,
     pub color: String,
     pub bongo: BongoConfig,
+    /// Final user option overrides, passed to role packages and Lua.
+    pub options: BTreeMap<String, Value>,
 }
 
 impl PetInstance {
@@ -467,6 +474,7 @@ impl PetInstance {
             package: self.package.clone(),
             color: self.color.clone(),
             bongo: self.bongo.clone(),
+            options: self.options.clone(),
         }
     }
 
@@ -622,6 +630,7 @@ match section {
         "mode",
         "move_mode",
         "bongo",
+        "options",
         "assets_dir",
         "cat_height",
         "keypress_duration_ms",
@@ -645,6 +654,11 @@ match section {
 /// `petweave doctor` and the config loader surface them.
 pub fn unknown_keys(text: &str) -> Vec<String> {
 fn walk(prefix: &str, table: &toml::value::Table, out: &mut Vec<String>, skip_below: &[&str]) {
+    // Role-package option names are dynamic and validated against the package
+    // manifest once the host resolves the package. They are not config typos.
+    if prefix.ends_with(".options") {
+        return;
+    }
     let section = if prefix.is_empty() {
         ""
     } else if skip_below.iter().any(|s| prefix.ends_with(s)) {
@@ -1118,7 +1132,7 @@ mod tests {
         let text = r#"
             [pet]
             kind = "lua"
-            package = "krill-pet"
+            package = "example-pet"
             surface_width = 896
             surface_height = 560
 

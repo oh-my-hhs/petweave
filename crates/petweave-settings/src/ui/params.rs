@@ -8,6 +8,7 @@
 //! color) that would otherwise be hard to find.
 
 use eframe::egui;
+use serde_json::Value;
 
 use petweave_core::config::{is_hhmm, PetInstance, PET_KINDS};
 
@@ -219,7 +220,7 @@ pub fn show(app: &mut SettingsApp, ui: &mut egui::Ui) {
         match pet.kind.as_str() {
             "bongo" => bongo_params(ui, &mut pet),
             "demo" => demo_params(ui, &mut pet),
-            "sprite" | "lua" => package_params(ui, &mut pet, &packages),
+            "sprite" | "lua" => package_params(ui, &mut pet, &packages, app),
             _ => {
                 ui.label(Tr::PACKAGE_ONLY);
             }
@@ -371,7 +372,7 @@ fn demo_params(ui: &mut egui::Ui, pet: &mut PetInstance) {
         });
 }
 
-fn package_params(ui: &mut egui::Ui, pet: &mut PetInstance, packages: &[(String, String)]) {
+fn package_params(ui: &mut egui::Ui, pet: &mut PetInstance, packages: &[(String, String)], app: &mut SettingsApp) {
     egui::Grid::new("params_package")
         .num_columns(2)
         .spacing([14.0, 6.0])
@@ -404,6 +405,60 @@ fn package_params(ui: &mut egui::Ui, pet: &mut PetInstance, packages: &[(String,
         });
     ui.add_space(4.0);
     ui.label(egui::RichText::new(Tr::PACKAGE_ONLY).small().weak());
+    if let Ok(dir) = petweave::package::resolve(&pet.package) {
+        if let Ok(manifest) = petweave::package::read_manifest(&dir) {
+            if !manifest.options.is_empty() {
+                ui.add_space(8.0);
+                ui.heading("角色包选项");
+                for option in &manifest.options {
+                    option_row(ui, pet, option, app);
+                }
+            }
+        }
+    }
+}
+
+fn option_row(ui: &mut egui::Ui, pet: &mut PetInstance, option: &petweave_core::manifest::ManifestOption, app: &mut SettingsApp) {
+    let key = option.key.clone();
+    let mut value = pet.options.get(&key).cloned().unwrap_or_else(|| option.default.clone());
+    ui.label(if option.label.is_empty() { &option.key } else { &option.label });
+    let changed = match option.kind.as_str() {
+        "bool" => value.as_bool().map(|mut v| { let changed = ui.checkbox(&mut v, "").changed(); value = Value::Bool(v); changed }).unwrap_or(false),
+        "int" | "keycode" => value.as_i64().map(|mut v| { let changed = ui.add(egui::DragValue::new(&mut v)).changed(); value = Value::from(v); changed }).unwrap_or(false),
+        "float" => value.as_f64().map(|mut v| { let changed = ui.add(egui::DragValue::new(&mut v)).changed(); value = serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null); changed }).unwrap_or(false),
+        "enum" => {
+            let mut current = value.as_str().unwrap_or_default().to_string();
+            let response = egui::ComboBox::from_id_salt(format!("option-{key}"))
+                .selected_text(&current)
+                .show_ui(ui, |ui| { for choice in &option.enum_values { ui.selectable_value(&mut current, choice.clone(), choice); } });
+            value = Value::String(current);
+            response.response.changed()
+        }
+        "keycode-list" => {
+            let mut current = value.as_array().map(|a| a.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect::<Vec<_>>().join(",")).unwrap_or_default();
+            let capturing = app.capturing_option.as_deref() == Some(key.as_str());
+            let mut changed = ui.add(egui::TextEdit::singleline(&mut current).hint_text("EV_KEY, 逗号分隔")).changed();
+            if ui.button(if capturing { "停止读取" } else { "读取键码" }).clicked() {
+                if capturing { app.stop_key_capture(); } else { app.start_key_capture(&key); }
+            }
+            if capturing {
+                if let Some((_captured_key, code)) = app.poll_key_capture() {
+                    let mut codes = value.as_array().cloned().unwrap_or_default();
+                    if !codes.iter().any(|v| v.as_u64() == Some(code as u64)) { codes.push(Value::from(code)); }
+                    current = codes.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+                    changed = true;
+                }
+            }
+            if changed { value = Value::Array(current.split(',').filter_map(|s| s.trim().parse::<u64>().ok()).map(Value::from).collect()); }
+            changed
+        }
+        _ => { let mut current = value.as_str().unwrap_or_default().to_string(); let changed = ui.text_edit_singleline(&mut current).changed(); value = Value::String(current); changed }
+    };
+    if changed || pet.options.contains_key(&key) {
+        if value == option.default { pet.options.remove(&key); } else { pet.options.insert(key, value); }
+    }
+    if let Some(description) = &option.description { ui.weak(description); }
+    ui.end_row();
 }
 
 fn hex_to_rgb(hex: &str) -> Option<[u8; 3]> {

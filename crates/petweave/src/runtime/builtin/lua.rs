@@ -39,6 +39,7 @@
 //! swallowed so a buggy pet cannot crash the host.
 
 use std::path::Path;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +49,7 @@ use mlua::{HookTriggers, Lua, MultiValue, StdLib, Table, Value, VmState};
 
 use petweave_core::events::{Event, SystemSnapshot};
 use petweave_core::manifest::Manifest;
+use serde_json::Value as JsonValue;
 use petweave_core::pet::{Pet, PetId};
 use petweave_core::render::Frame;
 
@@ -68,6 +70,8 @@ pub struct LuaPet {
     id: PetId,
     lua: Lua,
     env: Table,
+    config_values: Table,
+    config_defaults: BTreeMap<String, JsonValue>,
     sprite: Arc<Mutex<SpritePet>>,
     sys: Arc<Mutex<SystemSnapshot>>,
     speech: Arc<Mutex<Option<Speech>>>,
@@ -96,7 +100,11 @@ struct Speech {
 impl LuaPet {
     /// Load a lua package: manifest + animations + `main.lua` script.
     pub fn new(manifest: &Manifest, dir: &Path) -> Result<Self, String> {
-        let sprite = Arc::new(Mutex::new(SpritePet::new(manifest, dir)?));
+        Self::new_with_options(manifest, dir, &BTreeMap::new())
+    }
+
+    pub fn new_with_options(manifest: &Manifest, dir: &Path, overrides: &BTreeMap<String, JsonValue>) -> Result<Self, String> {
+        let sprite = Arc::new(Mutex::new(SpritePet::new_with_options(manifest, dir, overrides)?));
         let default_size = sprite.lock().map(|s| s.surface_size()).unwrap_or((1, 1));
 
         // Restricted stdlibs: no io/os/package/debug.
@@ -116,7 +124,9 @@ impl LuaPet {
 
         let sys = Arc::new(Mutex::new(SystemSnapshot::default()));
         let speech = Arc::new(Mutex::new(None));
-        setup_api(&lua, &env, &sprite, &sys, &speech)?;
+        let config_defaults = option_defaults(manifest);
+        let options = resolved_options(manifest, overrides);
+        let config_values = setup_api(&lua, &env, &sprite, &sys, &speech, &options)?;
 
         let script_path = dir.join(&manifest.pet.script);
         let code = std::fs::read_to_string(&script_path)
@@ -153,6 +163,8 @@ impl LuaPet {
             id: PetId(format!("lua:{}", manifest.meta.name)),
             lua,
             env,
+            config_values,
+            config_defaults,
             sprite,
             sys,
             speech,
@@ -349,10 +361,21 @@ impl Pet for LuaPet {
         petweave_core::pet::resolve_surface_size(Some(natural), width, height, fallback)
     }
 
-    fn reload(&mut self, _cfg: &petweave_core::config::PetConfig) -> Result<(), String> {
-        // Scripts are re-run on process restart; in-place reload would need
-        // full state re-execution — keep the current state and log.
-        tracing::info!("lua pet reload: script changes need a restart");
+    fn reload(&mut self, cfg: &petweave_core::config::PetConfig) -> Result<(), String> {
+        for (key, value) in &self.config_defaults {
+            self.config_values
+                .set(key.as_str(), json_to_lua(&self.lua, value)?)
+                .map_err(|e| e.to_string())?;
+        }
+        for (key, value) in &cfg.options {
+            if !self.config_defaults.contains_key(key) {
+                continue;
+            }
+            self.config_values
+                .set(key.as_str(), json_to_lua(&self.lua, value)?)
+                .map_err(|e| e.to_string())?;
+        }
+        self.dispatch("on_config_changed", MultiValue::new());
         Ok(())
     }
 }
@@ -424,7 +447,8 @@ fn setup_api(
     sprite: &Arc<Mutex<SpritePet>>,
     sys: &Arc<Mutex<SystemSnapshot>>,
     speech: &Arc<Mutex<Option<Speech>>>,
-) -> Result<(), String> {
+    options: &BTreeMap<String, JsonValue>,
+) -> Result<Table, String> {
     // Safe base functions from the real globals (print etc.).
     for name in [
         "print", "tostring", "tonumber", "type", "pairs", "ipairs", "next", "select", "assert",
@@ -451,6 +475,32 @@ fn setup_api(
     // through `_ENV` stay plain table reads.
 
     env.set("_G", env.clone()).map_err(|e| e.to_string())?;
+
+    // Read-only package options. The table itself is private to the sandbox;
+    // only the three query functions are exposed to scripts.
+    let config = lua.create_table().map_err(|e| e.to_string())?;
+    for (key, value) in options {
+        config.set(key.as_str(), json_to_lua(lua, value)?).map_err(|e| e.to_string())?;
+    }
+    let config_get = config.clone();
+    let config_number = config.clone();
+    let config_keys = config.clone();
+    let api = lua.create_table().map_err(|e| e.to_string())?;
+    api.set("get", lua.create_function(move |_, key: String| config_get.get::<Value>(key))
+        .map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    api.set("number", lua.create_function(move |_, key: String| {
+        let value: Value = config_number.get(key)?;
+        Ok(match value { Value::Integer(n) => Some(n as f64), Value::Number(n) => Some(n), _ => None })
+    }).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    api.set("keys", lua.create_function(move |lua, ()| {
+        let out = lua.create_table()?;
+        for (index, pair) in config_keys.pairs::<String, Value>().enumerate() {
+            let (key, _) = pair?;
+            out.set(index + 1, key)?;
+        }
+        Ok(out)
+    }).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    env.set("config", api).map_err(|e| e.to_string())?;
 
     // pet table.
     let pet = lua.create_table().map_err(|e| e.to_string())?;
@@ -592,7 +642,42 @@ fn setup_api(
         )
         .map_err(|e| e.to_string())?;
     env.set("sys", sys_tab).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(config)
+}
+
+fn resolved_options(manifest: &Manifest, overrides: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonValue> {
+    let mut out = option_defaults(manifest);
+    for (key, value) in overrides {
+        if out.contains_key(key) {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    out
+}
+
+fn option_defaults(manifest: &Manifest) -> BTreeMap<String, JsonValue> {
+    manifest
+        .options
+        .iter()
+        .filter_map(|option| serde_json::to_value(&option.default).ok().map(|value| (option.key.clone(), value)))
+        .collect()
+}
+
+fn json_to_lua(lua: &Lua, value: &JsonValue) -> Result<Value, String> {
+    match value {
+        JsonValue::Null => Ok(Value::Nil),
+        JsonValue::Bool(v) => Ok(Value::Boolean(*v)),
+        JsonValue::String(v) => Ok(Value::String(lua.create_string(v).map_err(|e| e.to_string())?)),
+        JsonValue::Number(v) => v.as_i64().map(Value::Integer).or_else(|| v.as_f64().map(Value::Number)).ok_or_else(|| "invalid option number".into()),
+        JsonValue::Array(values) => {
+            let table = lua.create_table().map_err(|e| e.to_string())?;
+            for (index, value) in values.iter().enumerate() {
+                table.set(index + 1, json_to_lua(lua, value)?).map_err(|e| e.to_string())?;
+            }
+            Ok(Value::Table(table))
+        }
+        JsonValue::Object(_) => Err("object option values are not supported".into()),
+    }
 }
 
 // --- speech bubble -----------------------------------------------------------
@@ -697,7 +782,6 @@ mod tests {
     use petweave_core::events::InputEvent;
     use petweave_core::manifest::{Animation, Meta, PetDecl, Reactions};
     use std::collections::HashMap;
-    use std::path::PathBuf;
 
     /// Temp lua package: 1x1 grid sheet (10x10 red) + a script.
     fn make_package(script: &str) -> (tempfile::TempDir, Manifest) {
@@ -743,6 +827,7 @@ mod tests {
                 idle: Some("idle".into()),
                 ..Reactions::default()
             },
+            options: Vec::new(),
         };
         (dir, manifest)
     }
@@ -776,6 +861,91 @@ mod tests {
             pressed: true,
         }));
         assert!(pet.tick(0.0));
+    }
+
+    #[test]
+    fn config_api_exposes_declared_values() {
+        let script = r#"
+            function init()
+                if config.number("hold_ms") == 500 and config.get("label") == "ok" then
+                    pet.play("idle")
+                else
+                    error("config values missing")
+                end
+            end
+        "#;
+        let (dir, mut manifest) = make_package(script);
+        manifest.options.push(petweave_core::manifest::ManifestOption {
+            key: "hold_ms".into(),
+            label: "Hold".into(),
+            kind: "int".into(),
+            default: serde_json::json!(350),
+            min: Some(serde_json::json!(0)),
+            max: Some(serde_json::json!(5000)),
+            enum_values: Vec::new(),
+            description: None,
+        });
+        manifest.options.push(petweave_core::manifest::ManifestOption {
+            key: "label".into(),
+            label: "Label".into(),
+            kind: "string".into(),
+            default: serde_json::json!("default"),
+            min: None,
+            max: None,
+            enum_values: Vec::new(),
+            description: None,
+        });
+        let mut options = std::collections::BTreeMap::new();
+        options.insert("hold_ms".into(), serde_json::json!(500));
+        options.insert("label".into(), serde_json::json!("ok"));
+        let pet = LuaPet::new_with_options(&manifest, dir.path(), &options).expect("lua config");
+        assert_eq!(pet.sprite.lock().unwrap().current_id(), "idle");
+    }
+
+    #[test]
+    fn config_reload_updates_lua_values_and_calls_handler() {
+        let script = r#"
+            function init() end
+            function on_config_changed()
+                if config.number("hold_ms") == 500 then pet.play("idle") end
+            end
+        "#;
+        let (dir, mut manifest) = make_package(script);
+        manifest.options.push(petweave_core::manifest::ManifestOption {
+            key: "hold_ms".into(), label: "Hold".into(), kind: "int".into(),
+            default: serde_json::json!(350), min: Some(serde_json::json!(0)),
+            max: Some(serde_json::json!(5000)), enum_values: Vec::new(), description: None,
+        });
+        let mut pet = LuaPet::new(&manifest, dir.path()).expect("lua config");
+        let cfg = petweave_core::config::PetConfig {
+            options: std::collections::BTreeMap::from([(String::from("hold_ms"), serde_json::json!(500))]),
+            ..petweave_core::config::PetConfig::default()
+        };
+        pet.reload(&cfg).expect("reload config");
+        assert_eq!(pet.sprite.lock().unwrap().current_id(), "idle");
+    }
+
+    #[test]
+    fn config_reload_replaces_removed_values_with_defaults() {
+        let script = r#"
+            function init() end
+            function on_config_changed() end
+        "#;
+        let (dir, mut manifest) = make_package(script);
+        manifest.options.push(petweave_core::manifest::ManifestOption {
+            key: "hold_ms".into(), label: "Hold".into(), kind: "int".into(),
+            default: serde_json::json!(350), min: Some(serde_json::json!(0)),
+            max: Some(serde_json::json!(5000)), enum_values: Vec::new(), description: None,
+        });
+        let mut pet = LuaPet::new_with_options(
+            &manifest,
+            dir.path(),
+            &std::collections::BTreeMap::from([("hold_ms".into(), serde_json::json!(500))]),
+        ).expect("lua config");
+        let cfg = petweave_core::config::PetConfig::default();
+        pet.reload(&cfg).expect("reload config");
+        let value: i64 = pet.config_values.get("hold_ms").expect("default value");
+        assert_eq!(value, 350);
     }
 
     fn load_err(manifest: &Manifest, dir: &Path) -> String {
@@ -989,114 +1159,6 @@ mod tests {
         assert_eq!(num, Some(0.5), "local number reaches init()");
     }
 
-    /// End-to-end check of the two reference packages (`packages/krill-pet`,
-    /// `packages/puro-pet`): their `main.lua` loads at 224x140 and owns the
-    /// keys (`OWN_KEYS`), so alternation, the held pose, the expression keys
-    /// and the hop are all driven by the script.
-    #[test]
-    fn press_packages_load() {
-        for (dir, manifest) in reference_packages() {
-            let pet = LuaPet::new(&manifest, &dir).expect("load package");
-            assert_eq!(
-                pet.preferred_size(),
-                Some((224, 140)),
-                "{}: 800x500 shown at 140px high",
-                manifest.meta.name
-            );
-            let init: Value = pet.env.get("init").expect("init");
-            assert_eq!(init.type_name(), "function", "{}: script ran", manifest.meta.name);
-            assert!(pet.own_pixels, "OWN_KEYS is read after the script runs");
-        }
-    }
-
-    /// A, SPACE (focus keys) and 1/2/3 (expression keys) against a real
-    /// package: alternate left/right on every press, hold the pose while a
-    /// key is down, expressions override the focus pose, and the surface
-    /// grows by the hop (`pet.size(224, 146)`) instead of scaling.
-    fn assert_press_package(name: &str, pet: &mut LuaPet) {
-        let pose = |p: &LuaPet| p.sprite.lock().unwrap().current_id().to_string();
-        let size = |p: &LuaPet| p.sprite.lock().unwrap().surface_size();
-        // Returns what the host would use to decide on a redraw.
-        let key = |p: &mut LuaPet, code: u32, pressed: bool| {
-            p.on_event(&Event::Input(InputEvent { device: "t".into(), code, pressed }))
-        };
-        assert_eq!(pose(pet), "basic", "{name}: starts at basic");
-        assert_eq!(size(pet), (224, 140), "{name}: natural size");
-
-        // Focus keys alternate on *every* press: left, right, left, right…
-        for (i, expected) in ["left", "right", "left", "right"].into_iter().enumerate() {
-            assert!(
-                key(pet, 30, true),
-                "{name}: press {} must ask for a repaint",
-                i + 1
-            );
-            assert_eq!(pose(pet), expected, "{name}: press {} shows {expected}", i + 1);
-            // No hop: the surface keeps its size while the key is held.
-            pet.tick(0.016);
-            assert_eq!(size(pet), (224, 140), "{name}: holding does not resize");
-            assert_eq!(pose(pet), expected, "{name}: the held pose stays");
-            key(pet, 30, false);
-            pet.tick(0.016);
-            assert_eq!(pose(pet), "basic", "{name}: release returns to basic");
-        }
-
-        // Every key except 1/2/3 is a focus key, on either half of the
-        // keyboard and for keys the old left/right tables missed
-        // (Y/U/I/O/P, H/J/K/L, N/M, right Shift/Ctrl/Alt, arrows, F-keys).
-        // The alternation continues across different keys (after the four
-        // presses above the next one is left again).
-        let mut expected = "left";
-        for code in [57u32, 28, 16, 30, 21, 22, 23, 24, 25, 35, 36, 37, 38, 49, 50, 54, 97,
-                     100, 103, 105, 106, 108, 59, 88, 110, 119] {
-            assert!(key(pet, code, true), "{name}: key {code} must react");
-            assert_eq!(pose(pet), expected, "{name}: key {code} shows {expected}");
-            expected = if expected == "left" { "right" } else { "left" };
-            pet.tick(0.016);
-            key(pet, code, false);
-            pet.tick(0.016);
-            assert_eq!(pose(pet), "basic", "{name}: key {code} release -> basic");
-        }
-
-        // Holding a focus key keeps its pose, even after several ticks.
-        key(pet, 16, true);
-        let held_pose = pose(pet);
-        assert!("left" == held_pose || "right" == held_pose, "{name}: {held_pose}");
-        for _ in 0..40 {
-            pet.tick(0.016);
-        }
-        assert_eq!(pose(pet), held_pose, "{name}: still held after 0.64s");
-        key(pet, 16, false);
-        pet.tick(0.016);
-        assert_eq!(pose(pet), "basic", "{name}: back to basic once released");
-
-        // Expression keys: pattern0/1/2, held, back to basic on release.
-        for (code, pattern) in [(2, "pattern0"), (3, "pattern1"), (4, "pattern2")] {
-            assert!(key(pet, code, true), "{name}: key {code} asks for a repaint");
-            pet.tick(0.016);
-            assert_eq!(pose(pet), pattern, "{name}: key {code} shows {pattern}");
-            pet.tick(0.5);
-            assert_eq!(pose(pet), pattern, "{name}: {pattern} stays while held");
-            key(pet, code, false);
-            pet.tick(0.016);
-            assert_eq!(pose(pet), "basic", "{name}: {pattern} ends on release");
-        }
-
-        // A focus key and an expression together: the expression wins, and
-        // releasing it falls back to the focus pose.
-        key(pet, 16, true);
-        let focus_pose = pose(pet);
-        key(pet, 2, true);
-        pet.tick(0.016);
-        assert_eq!(pose(pet), "pattern0", "{name}: expression overrides the focus pose");
-        key(pet, 2, false);
-        pet.tick(0.016);
-        assert_eq!(pose(pet), focus_pose, "{name}: back to the focus pose");
-        key(pet, 16, false);
-        pet.tick(0.016);
-        assert_eq!(pose(pet), "basic");
-        assert_eq!(size(pet), (224, 140), "{name}: the size never changes");
-    }
-
     /// A pose change made by the script must be repainted by the host: every
     /// key event of a script-owned pet reports a visible change, even when
     /// the pose is applied from `on_tick` rather than inside `on_key`.
@@ -1140,81 +1202,21 @@ mod tests {
         assert_eq!(pet.sprite.lock().unwrap().current_id(), "left", "pose applied on tick");
     }
 
-    /// The two packages under `packages/`, by name.
-    fn reference_packages() -> Vec<(PathBuf, Manifest)> {
-        ["krill-pet", "puro-pet"]
-            .into_iter()
-            .map(|pkg| {
-                let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-                    .join("packages")
-                    .join(pkg);
-                let manifest = crate::package::read_manifest(&dir).expect("manifest");
-                (dir, manifest)
-            })
-            .collect()
-    }
-
-    /// Configured `[[pets]].width/height` are the size a Lua pet gets on
-    /// screen; without them the package/script size (224x140) is used.
+    /// Configured dimensions override the Lua package's natural size.
     #[test]
     fn configured_size_wins_for_lua_pets() {
-        for (dir, manifest) in reference_packages() {
-            let name = manifest.meta.name.clone();
-            let pet = LuaPet::new(&manifest, &dir).expect("load package");
-            assert_eq!(
-                pet.surface_size(None, None, (256, 256)),
-                (224, 140),
-                "{name}: no override -> the package size"
-            );
-            assert_eq!(
-                pet.surface_size(Some(100), Some(60), (256, 256)),
-                (100, 60),
-                "{name}: configured size wins"
-            );
-            assert_eq!(
-                pet.surface_size(Some(0), None, (256, 256)),
-                (224, 140),
-                "{name}: 0 = inherit"
-            );
-            // A script `pet.size` after init is honoured when unconfigured.
-            pet.env
-                .get::<Table>("pet")
-                .and_then(|t| t.get::<mlua::Function>("size"))
-                .expect("pet.size")
-                .call::<()>((96u32, 60u32))
-                .expect("size");
-            assert_eq!(pet.surface_size(None, None, (256, 256)), (96, 60));
-        }
-    }
-
-    #[test]
-    fn press_packages_behave() {
-        for (dir, manifest) in reference_packages() {
-            let name = manifest.meta.name.clone();
-            let mut pet = LuaPet::new(&manifest, &dir).expect("load package");
-            assert_press_package(&name, &mut pet);
-        }
-    }
-
-    /// While a package animates it asks the host to keep ticking, and once
-    /// the hop has landed it goes back to sleep (idle CPU stays ~0%).
-    #[test]
-    fn press_packages_sleep_when_idle_and_wake_on_keys() {
-        for (dir, manifest) in reference_packages() {
-            let name = manifest.meta.name.clone();
-            let mut pet = LuaPet::new(&manifest, &dir).expect("load package");
-            assert!(pet.next_deadline().is_none(), "{name}: idle pet sleeps");
-            pet.on_event(&Event::Input(InputEvent { device: "t".into(), code: 30, pressed: true }));
-            assert!(pet.next_deadline().is_some(), "{name}: a key schedules ticks");
-            pet.on_event(&Event::Input(InputEvent { device: "t".into(), code: 30, pressed: false }));
-            for _ in 0..10 {
-                pet.tick(0.016);
-            }
-            assert_eq!(pet.sprite.lock().unwrap().surface_size(), (224, 140));
-            assert!(pet.next_deadline().is_none(), "{name}: settled pet sleeps");
-        }
+        let (dir, manifest) = make_package("OWN_PIXELS = true\nfunction init() end");
+        let pet = LuaPet::new(&manifest, dir.path()).expect("load package");
+        assert_eq!(pet.surface_size(None, None, (256, 256)), (64, 64));
+        assert_eq!(pet.surface_size(Some(100), Some(60), (256, 256)), (100, 60));
+        assert_eq!(pet.surface_size(Some(0), None, (256, 256)), (64, 64));
+        pet.env
+            .get::<Table>("pet")
+            .and_then(|t| t.get::<mlua::Function>("size"))
+            .expect("pet.size")
+            .call::<()>((96u32, 60u32))
+            .expect("size");
+        assert_eq!(pet.surface_size(None, None, (256, 256)), (96, 60));
     }
 
     #[test]
@@ -1229,6 +1231,3 @@ mod tests {
         assert!(!pet.bubble_was_visible);
     }
 }
-
-
-

@@ -29,6 +29,7 @@ use petweave_core::config::{
 };
 use petweave_core::placement::Anchor;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+use serde_json::Value as JsonValue;
 
 /// One saved config file.
 pub struct Store {
@@ -455,7 +456,34 @@ fn update_pet_table(
     }
 
     sync_bongo(table, before.map(|p| &p.bongo), &after.bongo);
+    sync_options(table, before.map(|p| &p.options), &after.options);
     Ok(())
+}
+
+fn sync_options(table: &mut Table, before: Option<&std::collections::BTreeMap<String, JsonValue>>, after: &std::collections::BTreeMap<String, JsonValue>) {
+    if before.is_some_and(|old| old == after) || before.is_none() && after.is_empty() { return; }
+    if after.is_empty() { table.remove("options"); return; }
+    let mut options = Table::new();
+    for (key, value) in after {
+        if let Some(item) = json_item(value) { options.insert(key, item); }
+    }
+    table.insert("options", Item::Table(options));
+}
+
+fn json_item(value: &JsonValue) -> Option<Item> {
+    match value {
+        JsonValue::Null => None,
+        JsonValue::Bool(v) => Some(toml_edit::value(*v)),
+        JsonValue::String(v) => Some(toml_edit::value(v.clone())),
+        JsonValue::Number(v) if v.as_i64().is_some() => Some(toml_edit::value(v.as_i64().unwrap())),
+        JsonValue::Number(v) => Some(toml_edit::value(v.as_f64()?)),
+        JsonValue::Array(values) => {
+            let mut array = toml_edit::Array::new();
+            for value in values { match json_item(value)? { Item::Value(v) => array.push(v), _ => return None } }
+            Some(Item::Value(toml_edit::Value::Array(array)))
+        }
+        JsonValue::Object(_) => None,
+    }
 }
 
 fn sync_bongo(table: &mut Table, before: Option<&BongoConfig>, after: &BongoConfig) {

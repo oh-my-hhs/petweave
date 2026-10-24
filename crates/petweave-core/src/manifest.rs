@@ -1,8 +1,10 @@
 //! Role-package manifest (`pet.toml` inside a `.petweave` package).
 
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::Error;
 
@@ -15,6 +17,38 @@ pub struct Manifest {
     /// Named animations; the keys are referenced by `reactions`.
     pub animations: HashMap<String, Animation>,
     pub reactions: Reactions,
+    /// User-editable options exposed to the host and settings GUI.
+    pub options: Vec<ManifestOption>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ManifestOption {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub default: Value,
+    pub min: Option<Value>,
+    pub max: Option<Value>,
+    #[serde(rename = "enum")]
+    pub enum_values: Vec<String>,
+    pub description: Option<String>,
+}
+
+impl Default for ManifestOption {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            label: String::new(),
+            kind: "string".into(),
+            default: Value::Null,
+            min: None,
+            max: None,
+            enum_values: Vec::new(),
+            description: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -306,6 +340,7 @@ impl Default for Manifest {
             pet: PetDecl::default(),
             animations: HashMap::new(),
             reactions: Reactions::default(),
+            options: Vec::new(),
         }
     }
 }
@@ -383,6 +418,16 @@ impl Manifest {
         if self.pet.kind == "lua" && self.pet.script.is_empty() {
             return Err(Error::Config("pet.script is required for kind = \"lua\"".into()));
         }
+        let mut option_keys = std::collections::BTreeSet::new();
+        for option in &self.options {
+            if option.key.trim().is_empty() || !option_keys.insert(option.key.clone()) {
+                return Err(Error::Config(format!("options.{}: key must be non-empty and unique", option.key)));
+            }
+            if !matches!(option.kind.as_str(), "string" | "int" | "float" | "bool" | "keycode" | "enum" | "keycode-list") {
+                return Err(Error::Config(format!("options.{}.type is unsupported: {:?}", option.key, option.kind)));
+            }
+            validate_option_value(option)?;
+        }
         for (id, anim) in &self.animations {
             if anim.sheet.is_empty() {
                 return Err(Error::Config(format!("animations.{id}.sheet is required")));
@@ -444,6 +489,70 @@ impl Manifest {
         }
         Ok(())
     }
+
+    /// Merge package defaults with user overrides and validate every key.
+    pub fn resolve_options(&self, overrides: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+        let mut out = BTreeMap::new();
+        for option in &self.options {
+            out.insert(option.key.clone(), option.default.clone());
+        }
+        for (key, value) in overrides {
+            let Some(option) = self.options.iter().find(|option| option.key == *key) else {
+                return Err(Error::Config(format!("options.{key}: key is not declared by the package")));
+            };
+            validate_user_option(option, value)?;
+            out.insert(key.clone(), value.clone());
+        }
+        Ok(out)
+    }
+}
+
+fn validate_option_value(option: &ManifestOption) -> Result<(), Error> {
+    let valid = match option.kind.as_str() {
+        "string" => option.default.is_string(),
+        "int" | "keycode" => option.default.as_i64().is_some(),
+        "float" => option.default.as_f64().is_some(),
+        "bool" => option.default.is_boolean(),
+        "enum" => option.default.as_str().is_some_and(|v| option.enum_values.iter().any(|x| x == v)),
+        "keycode-list" => option.default.as_array().is_some_and(|a| a.iter().all(|v| v.as_u64().is_some_and(|n| n <= u32::MAX as u64))),
+        _ => false,
+    };
+    if !valid {
+        return Err(Error::Config(format!("options.{}.default has wrong type", option.key)));
+    }
+    if matches!(option.kind.as_str(), "int" | "float" | "keycode") {
+        if let (Some(min), Some(value)) = (option.min.as_ref().and_then(Value::as_f64), option.default.as_f64()) {
+            if value < min { return Err(Error::Config(format!("options.{}.default is below min", option.key))); }
+        }
+        if let (Some(max), Some(value)) = (option.max.as_ref().and_then(Value::as_f64), option.default.as_f64()) {
+            if value > max { return Err(Error::Config(format!("options.{}.default is above max", option.key))); }
+        }
+    }
+    Ok(())
+}
+
+fn validate_user_option(option: &ManifestOption, value: &Value) -> Result<(), Error> {
+    let valid = match option.kind.as_str() {
+        "string" => value.is_string(),
+        "int" | "keycode" => value.as_i64().is_some(),
+        "float" => value.as_f64().is_some(),
+        "bool" => value.is_boolean(),
+        "enum" => value.as_str().is_some_and(|v| option.enum_values.iter().any(|x| x == v)),
+        "keycode-list" => value.as_array().is_some_and(|a| a.iter().all(|v| v.as_u64().is_some_and(|n| n <= u32::MAX as u64))),
+        _ => false,
+    };
+    if !valid {
+        return Err(Error::Config(format!("options.{}: value has wrong type", option.key)));
+    }
+    if matches!(option.kind.as_str(), "int" | "float" | "keycode") {
+        if let (Some(min), Some(number)) = (option.min.as_ref().and_then(Value::as_f64), value.as_f64()) {
+            if number < min { return Err(Error::Config(format!("options.{}: value is below min", option.key))); }
+        }
+        if let (Some(max), Some(number)) = (option.max.as_ref().and_then(Value::as_f64), value.as_f64()) {
+            if number > max { return Err(Error::Config(format!("options.{}: value is above max", option.key))); }
+        }
+    }
+    Ok(())
 }
 
 /// Animation frame rate clamped to a sane range.
@@ -637,5 +746,34 @@ mod tests {
         assert_eq!(Animation::default().frames, vec![0]);
         assert_eq!(Animation::default().fps, 1);
         assert!(!Animation::default().loop_);
+    }
+
+    #[test]
+    fn options_validate_and_merge_overrides() {
+        let text = r#"
+            [meta]
+            name = "options"
+            [pet]
+            kind = "lua"
+            [animations.idle]
+            sheet = "s.png"
+            cell_width = 1
+            cell_height = 1
+            [[options]]
+            key = "hold_ms"
+            label = "Hold"
+            type = "int"
+            default = 350
+            min = 0
+            max = 5000
+        "#;
+        let m = Manifest::from_toml(text).expect("options manifest");
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert("hold_ms".into(), serde_json::json!(500));
+        let resolved = m.resolve_options(&overrides).expect("resolved options");
+        assert_eq!(resolved["hold_ms"], serde_json::json!(500));
+        overrides.insert("unknown".into(), serde_json::json!(true));
+        let err = m.resolve_options(&overrides).expect_err("unknown option");
+        assert!(err.to_string().contains("options.unknown"));
     }
 }

@@ -259,7 +259,7 @@ petweave settings                      # 或直接运行 ./target/debug/petweave
 - **预览（G3）**：列表缩略图与参数页动画预览都走宿主同款 `Runtime`/`Frame` 渲染（约 10fps，
   只有显示时才跑），睡眠帧、气泡、脚本自定义尺寸都会如实显示。
 
-诊断页（G4）尚未实现，路线见 [`docs/GUI_ROADMAP.md`](docs/GUI_ROADMAP.md)。
+诊断页位于设置面板的「诊断」页，可查看 Wayland 会话、输入设备、配置文件、控制协议、渲染后端和角色包仓库状态；托盘菜单也提供「打开设置…」入口。发行版打包模板见 [`packaging/`](packaging/)。
 
 ### 控制通道（设置界面前置）
 

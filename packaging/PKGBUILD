@@ -1,0 +1,22 @@
+pkgname=petweave
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Wayland desktop pet framework with an independent settings GUI'
+arch=('x86_64' 'aarch64')
+url='https://github.com/petweave/petweave'
+license=('MIT')
+depends=('wayland' 'libinput' 'libxkbcommon')
+makedepends=('cargo')
+source=()
+sha256sums=()
+
+build() {
+  export CARGO_HOME="$srcdir/cargo-home"
+  cargo build --release --locked
+}
+
+package() {
+  install -Dm755 target/release/petweave "$pkgdir/usr/bin/petweave"
+  install -Dm755 target/release/petweave-settings "$pkgdir/usr/bin/petweave-settings"
+  install -Dm644 petweave.toml.example "$pkgdir/usr/share/doc/$pkgname/petweave.toml.example"
+}

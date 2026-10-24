@@ -26,6 +26,7 @@ pub enum Page {
     Pets,
     Params,
     Layout,
+    Doctor,
     About,
 }
 
@@ -35,6 +36,7 @@ impl Page {
             Self::Pets => Tr::SIDEBAR_PETS,
             Self::Params => Tr::SIDEBAR_PARAMS,
             Self::Layout => Tr::SIDEBAR_LAYOUT,
+            Self::Doctor => Tr::SIDEBAR_DOCTOR,
             Self::About => Tr::SIDEBAR_ABOUT,
         }
     }
@@ -580,7 +582,7 @@ impl SettingsApp {
     /// Sidebar navigation.
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        for page in [Page::Pets, Page::Params, Page::Layout, Page::About] {
+        for page in [Page::Pets, Page::Params, Page::Layout, Page::Doctor, Page::About] {
             let selected = self.page == page;
             if ui.selectable_label(selected, page.label()).clicked() {
                 self.page = page;
@@ -637,6 +639,7 @@ impl SettingsApp {
             Page::Pets => crate::ui::pets::show(self, ui),
             Page::Params => crate::ui::params::show(self, ui),
             Page::Layout => crate::ui::layout::show(self, ui),
+            Page::Doctor => crate::ui::doctor::show(self, ui),
             Page::About => crate::ui::about::show(self, ui),
         }
     }

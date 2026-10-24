@@ -10,6 +10,7 @@ impl Tr {
     pub const SIDEBAR_PETS: &'static str = "宠物列表";
     pub const SIDEBAR_PARAMS: &'static str = "参数";
     pub const SIDEBAR_LAYOUT: &'static str = "布局";
+    pub const SIDEBAR_DOCTOR: &'static str = "诊断";
     pub const SIDEBAR_ABOUT: &'static str = "关于";
 
     pub const SAVE: &'static str = "保存并应用";

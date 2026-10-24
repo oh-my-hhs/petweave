@@ -3,6 +3,7 @@
 //! table is drawn to keep borrows simple).
 
 pub mod about;
+pub mod doctor;
 pub mod layout;
 pub mod params;
 pub mod pets;

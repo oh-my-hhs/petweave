@@ -262,6 +262,37 @@ impl ksni::Tray for PetTray {
         items.push(MenuItem::Separator);
         items.push(
             StandardItem {
+                label: "打开设置…".into(),
+                activate: Box::new(|_this: &mut Self| {
+                    let mut candidates = Vec::new();
+                    if let Ok(exe) = std::env::current_exe() {
+                        if let Some(dir) = exe.parent() {
+                            candidates.push(dir.join("petweave-settings"));
+                        }
+                    }
+                    if let Some(path) = std::env::var_os("PATH") {
+                        candidates.extend(std::env::split_paths(&path).map(|dir| dir.join("petweave-settings")));
+                    }
+                    if let Some(binary) = candidates.into_iter().find(|path| {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::metadata(path)
+                            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false)
+                    }) {
+                        if let Err(error) = std::process::Command::new(binary).spawn() {
+                            tracing::warn!(%error, "failed to launch petweave-settings from tray");
+                        }
+                    } else {
+                        tracing::warn!("petweave-settings not found; build it with cargo build -p petweave-settings");
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        items.push(MenuItem::Separator);
+        items.push(
+            StandardItem {
                 label: "退出 PetWeave".into(),
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.tx.send(HostCommand::Quit);
@@ -453,8 +484,8 @@ mod tests {
         let mut tray = PetTray::new(shared, tx, None, "PetWeave".into());
 
         let items = tray.menu();
-        // [show/hide, sep, mode submenu, sep, layer submenu, sep, quit]
-        assert_eq!(items.len(), 7, "menu shape changed");
+        // [show/hide, sep, mode submenu, sep, layer submenu, sep, settings, sep, quit]
+        assert_eq!(items.len(), 9, "menu shape changed");
         let ksni::menu::MenuItem::SubMenu(sub) = &items[2] else {
             panic!("third item should be the mode submenu");
         };

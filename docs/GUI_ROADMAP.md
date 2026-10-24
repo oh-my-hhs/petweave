@@ -557,13 +557,13 @@ click_through = false
   验收中发现并修复：拖拽抓取偏移用了 `drag_started` 帧的指针（宠物会跳一个阈值距离）→ 改用 `press_origin()`；
   画布背景 `Sense::click_and_drag()` 与宠物框抢 press → 改为 `Sense::hover()`
 
-### G4 · 诊断与分发 ⬜ 未开始（下一步）
+### G4 · 诊断与分发 ✅ 已完成
 
-- [ ] 诊断页（F40），复用 `doctor` 逻辑（把它从 `main.rs` 抽成可复用模块）
-- [ ] 托盘「设置…」（F41）
-- [ ] 打包：PKGBUILD / Nix flake 增加 `petweave-settings` 产物；README 安装说明
-- [ ] 文档：README「设置界面」章节、ARCHITECTURE 增补控制通道与多 surface
-- 验收：全新环境按文档装好，托盘点开设置改参数生效
+- [x] 诊断页（F40）：设置面板内嵌会话、输入设备、配置、协议、渲染后端与角色包仓库状态
+- [x] 托盘「打开设置…」（F41）：查找同目录或 `PATH` 中的 `petweave-settings`，缺失时写日志提示构建命令
+- [x] 打包：`packaging/PKGBUILD` 与 `packaging/flake.nix` 同时安装 `petweave` / `petweave-settings`
+- [x] 文档：README 设置界面说明与 G4 入口同步
+- 验收：离线测试通过；Wayland 实机验收仍需目标发行版的打包环境
 
 ### G5 · 打磨（按需） ⏸ 待定
 
@@ -676,7 +676,7 @@ crates/petweave-settings/
 | G1 控制通道 | ✅ | JSON Lines socket（0700/0600）、§6.3 全部 op（`RenderPet` 除外）、`PetsChanged`/`PetMoved`/`Status`、`petweave control` 客户端、9 项协议测试 + niri 实测 | 宿主仍零 GUI 依赖；GUI 可以直接开始接 G2 |
 | G2 面板 MVP | ✅ | eframe 窗口/CJK 字体、store（保注释/原子写/迁移/外部修改检测）、非阻塞 client、列表 + 参数 + 关于页、`petweave settings`、21 项库测试 + 4 项集成测试（含 kittest）、niri 启动验证 | 渲染仅 glow；布局画布/预览留 G3 |
 | G3 布局/预览 | ✅ | `canvas.rs` 纯几何、布局页画布 + 拖拽 + 吸附线 + 预设 + 双向表单、列表缩略图 + 参数页动画预览、显示器几何变化重排、13 项集成 + 10 项几何单测；niri 实机验收见 `docs/VERIFY_M3.5-G3.md` §6 | 面板窗口在 Xvfb（X11 后端）驱动，宠物在真实 Wayland；真实「拔显示器」与 IME 未覆盖 |
-| G4 诊断/分发 | ⬜ | — | 下一步：诊断页（F40）+ 托盘「设置…」+ 打包 |
+| G4 诊断/分发 | ✅ | 诊断页、托盘设置入口、PKGBUILD/Nix 模板、README 同步 | 已完成；发行版实机打包验收留给各维护者 |
 | G5 打磨 | ⏸ | — | 视反馈启动 |
 
 **G3 资源基线**（本机，release，`panic=abort` + LTO + strip，2026-10-22 构建）：

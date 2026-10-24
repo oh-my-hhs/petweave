@@ -118,9 +118,9 @@
       （复用宿主 `Runtime`/`Frame` 渲染，~10fps，仅显示时运行）+ 表单与画布双向同步 + 「放到底部居中/恢复默认位置」预设；
       拖拽实时 `SetPlacement`、松手写配置；显示器热插拔重建页面
       （`canvas`/`preview`/`ui::layout`；34 项设置库测试 + 13 项集成测试；实机验收记录见 `docs/VERIFY_M3.5-G3.md` §6）
-- [ ] G4 诊断与分发：内嵌 `doctor`、托盘「设置…」、PKGBUILD/Nix 产物、README 章节
+- [x] G4 诊断与分发：内嵌诊断页、托盘「设置…」、PKGBUILD/Nix 产物、README 章节
 - [x] 入口：`petweave settings`（exec 同目录/`PATH` 的 `petweave-settings`）+ 独立二进制（缺失时给出构建/安装提示）
-- [ ] 托盘「设置…」入口（G4）
+- [x] 托盘「设置…」入口（G4）
 - 验收：不手写 TOML，纯 GUI 完成"三只宠物同屏、各自定位、改 BongoCat 高度并在桌面立即生效"——
      G2 已支持列表增删/复制/排序、anchor+margin 表单、尺寸/参数保存并即时生效；G3 补齐画布拖拽、吸附、
      缩略图/动画预览，并在 niri 上实测通过（拖拽落点 504,200 与 `grim` 逐像素一致，吸附线可见，预览与桌面同帧）

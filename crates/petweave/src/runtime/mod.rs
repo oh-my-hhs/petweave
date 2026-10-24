@@ -351,6 +351,8 @@ impl Runtime {
     /// The pet array order follows the config (`slots` order = z-order).
     pub fn apply(&mut self, config: &Config) -> ReloadOutcome {
         let wanted = config.enabled_pets();
+        // Rebuild diagnostics from this attempt, including retained old slots.
+        self.load_errors.clear();
 
         let mut outcome = ReloadOutcome::default();
 
@@ -375,6 +377,7 @@ impl Runtime {
                         Err(e) => {
                             tracing::error!("pet {:?}: reload failed: {e}", pet.id);
                             self.load_errors.push((pet.id.clone(), e));
+                            next.push(slot);
                         }
                     }
                     continue;
@@ -383,7 +386,12 @@ impl Runtime {
                 if config_changed {
                     if let Err(e) = slot.instance.reload(&pet.pet_config()) {
                         tracing::warn!("pet {:?}: reload failed (keeping state): {e}", pet.id);
+                        self.load_errors.push((pet.id.clone(), e));
+                        next.push(slot);
+                        continue;
                     }
+                    // Implementations may reconstruct themselves during reload.
+                    slot.instance.set_pet_id(pet.pet_id());
                 }
                 slot.pet = pet.clone();
                 let size_after = slot.surface_size();
@@ -718,6 +726,57 @@ mod tests {
             rt.slots()[1].instance.id().as_str()
         );
         let _ = &mut rt;
+    }
+
+    #[test]
+    fn failed_replacement_keeps_the_old_pet_and_errors_do_not_accumulate() {
+        let base = cfg(TWO_DEMOS);
+        let mut rt = Runtime::new(&base);
+        let mut broken = base.clone();
+        broken.pets[0].kind = "sprite".into();
+        let dir = tempfile::tempdir().unwrap();
+        broken.pets[0].package = dir.path().join("missing").to_string_lossy().into();
+        for _ in 0..2 {
+            let out = rt.apply(&broken);
+            assert!(!out.structural_change());
+            assert_eq!(rt.ids(), ["a", "b"]);
+            assert_eq!(rt.slots()[0].pet.instance.kind, "demo");
+            assert_eq!(rt.load_errors().len(), 1);
+        }
+        rt.apply(&base);
+        assert!(rt.load_errors().is_empty());
+        // Removed/disabled failures must disappear from diagnostics too.
+        let mut rt = Runtime::new(&broken);
+        assert_eq!(rt.load_errors().len(), 1);
+        broken.pets[0].enabled = false;
+        rt.apply(&broken);
+        assert!(rt.load_errors().is_empty());
+    }
+
+    #[test]
+    fn bongo_reload_preserves_id_and_retries_failed_config() {
+        let mut base = Config::default();
+        base.pets[0].kind = "bongo".into();
+        base.pets[0].id = Some("stable-cat".into());
+        base.pets[0].bongo.assets_dir =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/bongocat").into();
+        let mut rt = Runtime::new(&base);
+        assert!(rt.load_errors().is_empty());
+        base.pets[0].bongo.cat_height = 120;
+        rt.apply(&base);
+        assert_eq!(rt.slots()[0].instance.id().as_str(), "stable-cat");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bongo-cat-both-up.png"), b"invalid PNG").unwrap();
+        let mut broken = base.clone();
+        broken.pets[0].bongo.assets_dir = dir.path().to_string_lossy().into();
+        for _ in 0..2 {
+            rt.apply(&broken);
+            assert_eq!(rt.load_errors().len(), 1);
+            assert_eq!(rt.slots()[0].pet.instance, base.pets[0]);
+            assert_eq!(rt.slots()[0].instance.id().as_str(), "stable-cat");
+        }
+        rt.apply(&base);
+        assert!(rt.load_errors().is_empty());
     }
 
     #[test]

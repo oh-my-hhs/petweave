@@ -350,6 +350,13 @@ impl Default for Animation {
     }
 }
 
+/// Package names are single path components, never the special dot directories.
+pub fn is_safe_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && !matches!(name, "." | "..")
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 impl Manifest {
     /// Parse from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, Error> {
@@ -361,8 +368,7 @@ impl Manifest {
 
     /// Validate names, sizes and reaction references.
     pub fn validate(&self) -> Result<(), Error> {
-        let bad = |c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
-        if self.meta.name.is_empty() || self.meta.name.chars().any(bad) {
+        if !is_safe_package_name(&self.meta.name) {
             return Err(Error::Config(format!(
                 "meta.name must be a filesystem-safe name ([a-zA-Z0-9._-]), got {:?}",
                 self.meta.name
@@ -448,6 +454,19 @@ pub fn clamp_fps(fps: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_names_cannot_escape_the_repository() {
+        for name in ["", ".", "..", "../pet", "/tmp/pet", "a/b"] {
+            assert!(!is_safe_package_name(name), "{name:?}");
+            let mut manifest = Manifest::default();
+            manifest.meta.name = name.into();
+            assert!(manifest.validate().is_err());
+        }
+        for name in ["my-pet", "pet.v2", "_pet", ".pet"] {
+            assert!(is_safe_package_name(name), "{name:?}");
+        }
+    }
 
     const SAMPLE: &str = r#"
         [meta]

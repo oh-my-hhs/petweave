@@ -111,10 +111,12 @@ impl PreviewCache {
                 return false;
             }
         }
-        runtime.tick_all();
+        let changed = runtime.tick_all() || self.last_tick.is_none();
         self.last_tick = Some(Instant::now());
-        self.stamps = self.stamps.saturating_add(1);
-        true
+        if changed {
+            self.stamps = self.stamps.saturating_add(1);
+        }
+        changed
     }
 
     /// Force the next [`Self::texture`] call to produce a fresh frame (after a
@@ -322,6 +324,22 @@ mod tests {
         assert_eq!(&out[..4], &[255, 255, 255, 255]);
         let right = 3 * 4;
         assert_eq!(out[right + 3], 0, "transparent stays transparent");
+    }
+
+    #[test]
+    fn idle_preview_reuses_its_texture() {
+        let mut preview = PreviewCache::new();
+        preview.sync(&Config::default());
+        let id = preview.loaded_ids()[0].to_string();
+        let ctx = egui::Context::default();
+        assert!(preview.tick_after(Duration::ZERO));
+        let first = preview.texture(&ctx, &id, 32).unwrap();
+        assert!(!preview.tick_after(Duration::ZERO));
+        let second = preview.texture(&ctx, &id, 32).unwrap();
+        assert_eq!(first.id(), second.id());
+        preview.invalidate();
+        let third = preview.texture(&ctx, &id, 32).unwrap();
+        assert_ne!(first.id(), third.id());
     }
 
     #[test]

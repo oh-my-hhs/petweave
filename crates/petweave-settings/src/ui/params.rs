@@ -408,9 +408,20 @@ fn package_params(ui: &mut egui::Ui, pet: &mut PetInstance, packages: &[(String,
 
 fn hex_to_rgb(hex: &str) -> Option<[u8; 3]> {
     let hex = hex.strip_prefix('#')?;
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     let parse = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
     Some([parse(0)?, parse(2)?, parse(4)?])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_picker_handles_invalid_unicode() {
+        assert_eq!(hex_to_rgb("#猫猫"), None);
+        assert_eq!(hex_to_rgb("#123456"), Some([0x12, 0x34, 0x56]));
+    }
 }

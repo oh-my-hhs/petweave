@@ -1048,7 +1048,7 @@ impl App {
         margins: [i32; 4],
     ) -> Result<Value, ControlError> {
         placement::Anchor::parse(anchor).map_err(ControlError::invalid)?;
-        if margins.iter().any(|m| m.abs() > MAX_MARGIN_ABS) {
+        if margins.iter().any(|m| !(-MAX_MARGIN_ABS..=MAX_MARGIN_ABS).contains(m)) {
             return Err(ControlError::invalid(format!(
                 "margins must be within ±{MAX_MARGIN_ABS} logical pixels"
             )));

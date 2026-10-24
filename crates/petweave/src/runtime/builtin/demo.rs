@@ -74,6 +74,9 @@ impl Pet for DemoPet {
 /// Parse `#rrggbb` or `#rrggbbaa` into RGBA. `None` on malformed input.
 fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
     let s = s.strip_prefix('#')?;
+    if !s.is_ascii() {
+        return None;
+    }
     let mut bytes = [0u8; 4];
     bytes[3] = 0xff;
     match s.len() {
@@ -110,5 +113,7 @@ mod tests {
         assert_eq!(parse_hex_color("ff6699"), None);
         assert_eq!(parse_hex_color("#ff66"), None);
         assert_eq!(parse_hex_color("#gggggg"), None);
+        assert_eq!(parse_hex_color("#猫猫"), None);
+        assert_eq!(parse_hex_color("#猫猫ab"), None);
     }
 }

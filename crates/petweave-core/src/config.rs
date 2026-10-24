@@ -819,7 +819,7 @@ impl Config {
             )));
         }
         for (name, v) in self.render.margins() {
-            if v.abs() > MAX_MARGIN_ABS {
+            if !(-MAX_MARGIN_ABS..=MAX_MARGIN_ABS).contains(&v) {
                 return Err(Error::Config(format!(
                     "render.{name} must be in -8192..=8192, got {v}"
                 )));
@@ -922,7 +922,7 @@ impl Config {
             ("margin_bottom", resolved.margin_bottom),
             ("margin_left", resolved.margin_left),
         ] {
-            if v.abs() > MAX_MARGIN_ABS {
+            if !(-MAX_MARGIN_ABS..=MAX_MARGIN_ABS).contains(&v) {
                 return Err(Error::Config(format!(
                     "{where_}.{name} must be in -8192..=8192, got {v}"
                 )));
@@ -1082,6 +1082,24 @@ pub fn default_config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extreme_margins_are_rejected_without_overflow() {
+        for value in [i32::MIN, i32::MAX, -8193, 8193] {
+            let mut cfg = Config::default();
+            cfg.render.margin_top = value;
+            assert!(cfg.validate().is_err());
+            cfg.render.margin_top = 0;
+            cfg.pets[0].margin_left = Some(value);
+            assert!(cfg.validate().is_err());
+        }
+        for value in [-8192, 8192] {
+            let mut cfg = Config::default();
+            cfg.render.margin_top = value;
+            cfg.pets[0].margin_left = Some(value);
+            assert!(cfg.validate().is_ok());
+        }
+    }
 
     #[test]
     fn defaults_are_sane() {

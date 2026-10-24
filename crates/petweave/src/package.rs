@@ -80,23 +80,55 @@ pub fn install(src: &Path) -> Result<String, String> {
         ));
     };
 
-    let dest = repo_dir().join(&name);
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
-    }
-    fs::create_dir_all(&dest).map_err(|e| format!("cannot create {}: {e}", dest.display()))?;
-
-    if is_zip {
-        extract_zip(src, &dest)?;
-    } else {
-        copy_dir(src, &dest)?;
-    }
-    tracing::info!("installed package {name:?} -> {}", dest.display());
+    install_into(src, &repo_dir(), &name, is_zip)?;
+    tracing::info!("installed package {name:?}");
     Ok(name)
+}
+
+// Stage the complete package before touching the old installation. This also
+// makes installing from the installed directory itself safe.
+fn install_into(src: &Path, repo: &Path, name: &str, is_zip: bool) -> Result<(), String> {
+    fs::create_dir_all(repo).map_err(|e| e.to_string())?;
+    if !is_zip {
+        let source = fs::canonicalize(src).map_err(|e| e.to_string())?;
+        let repository = fs::canonicalize(repo).map_err(|e| e.to_string())?;
+        if repository.starts_with(&source) {
+            return Err("package source must not contain the repository".into());
+        }
+    }
+    let staging = tempfile::tempdir_in(repo).map_err(|e| e.to_string())?;
+    let fresh = staging.path().join("new");
+    fs::create_dir(&fresh).map_err(|e| e.to_string())?;
+    if is_zip {
+        extract_zip(src, &fresh)?;
+    } else {
+        copy_dir(src, &fresh)?;
+    }
+    read_manifest(&fresh)?;
+    let dest = repo.join(name);
+    let backup = staging.path().join("old");
+    let existed = dest.symlink_metadata().is_ok();
+    if existed {
+        fs::rename(&dest, &backup).map_err(|e| e.to_string())?;
+    }
+    if let Err(e) = fs::rename(&fresh, &dest) {
+        if existed {
+            if let Err(restore) = fs::rename(&backup, &dest) {
+                let saved = staging.keep();
+                return Err(format!("install failed: {e}; restore failed: {restore}; backup: {}",
+                    saved.join("old").display()));
+            }
+        }
+        return Err(format!("cannot install {}: {e}", dest.display()));
+    }
+    Ok(())
 }
 
 /// Remove an installed package.
 pub fn uninstall(name: &str) -> Result<(), String> {
+    if !petweave_core::manifest::is_safe_package_name(name) {
+        return Err(format!("unsafe package name: {name:?}"));
+    }
     let dir = repo_dir().join(name);
     if !dir.join(MANIFEST_NAME).is_file() {
         return Err(format!("package {name:?} is not installed"));
@@ -203,7 +235,11 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
 }
 
 fn copy_dir(src: &Path, dest: &Path) -> Result<(), String> {
-    for entry in WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(src) {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().is_symlink() || (!entry.file_type().is_dir() && !entry.file_type().is_file()) {
+            return Err(format!("unsupported package entry: {}", entry.path().display()));
+        }
         let rel = entry
             .path()
             .strip_prefix(src)
@@ -268,6 +304,11 @@ fn parse_xpm(text: &str) -> Result<(u32, u32, Vec<u8>), String> {
     let ncolors: usize = it.next().unwrap().parse().map_err(|_| "bad color count")?;
     let cpp: usize = it.next().unwrap().parse().map_err(|_| "bad chars-per-pixel")?;
 
+    if w == 0 || h == 0 || cpp == 0 || ncolors == 0 {
+        return Err("XPM dimensions, color count and chars-per-pixel must be positive".into());
+    }
+    let row_len = (w as usize).checked_mul(cpp).ok_or("XPM row too large")?;
+
     let lines = text.lines().map(str::trim);
     // Skip to the first color-map line after the header.
     let mut color_map: Vec<(String, [u8; 4])> = Vec::new();
@@ -317,9 +358,16 @@ fn parse_xpm(text: &str) -> Result<(u32, u32, Vec<u8>), String> {
             .ok_or_else(|| format!("unknown XPM color cell {cell:?}"))
     };
 
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    // Validate before allocation and slicing; commas inside quotes are pixels.
+    if rows.iter().any(|row| row.len() != row_len || !row.is_ascii()) {
+        return Err("XPM pixel row has an invalid length or non-ASCII cells".into());
+    }
+    let len = (w as usize).checked_mul(h as usize)
+        .and_then(|n| n.checked_mul(4)).ok_or("XPM image too large")?;
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(len).map_err(|e| format!("XPM image too large: {e}"))?;
+    rgba.resize(len, 0);
     for (y, row) in rows.iter().enumerate() {
-        let row = row.trim_end_matches(',');
         for x in 0..w as usize {
             let start = x * cpp;
             let cell = &row[start..start + cpp];
@@ -338,6 +386,9 @@ fn parse_color(s: &str) -> [u8; 4] {
         return [0, 0, 0, 0];
     }
     if let Some(hex) = s.strip_prefix('#') {
+        if !hex.is_ascii() {
+            return [0, 0, 0, 255];
+        }
         let (r, g, b) = match hex.len() {
             3 => (
                 u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) * 17,
@@ -394,6 +445,57 @@ static char *oneko[] = {
 "x x",
 };
 "#;
+
+    #[test]
+    fn installation_is_staged_and_can_reinstall_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let src = root.path().join("source");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join(MANIFEST_NAME), "[meta]\nname = 'cat'\n").unwrap();
+        fs::write(src.join("art"), b"original").unwrap();
+        install_into(&src, &repo, "cat", false).unwrap();
+        let installed = repo.join("cat");
+        install_into(&installed, &repo, "cat", false).unwrap();
+        assert_eq!(fs::read(installed.join("art")).unwrap(), b"original");
+        std::os::unix::fs::symlink("missing", src.join("broken")).unwrap();
+        assert!(install_into(&src, &repo, "cat", false).is_err());
+        assert_eq!(fs::read(installed.join("art")).unwrap(), b"original");
+        assert!(read_manifest(&installed).is_ok());
+        let archive = root.path().join("bad.petweave");
+        let mut zip = ZipWriter::new(fs::File::create(&archive).unwrap());
+        zip.start_file("../escape", SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"bad").unwrap();
+        zip.finish().unwrap();
+        assert!(install_into(&archive, &repo, "cat", true).is_err());
+        assert_eq!(fs::read(installed.join("art")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn uninstall_rejects_paths_before_accessing_disk() {
+        for name in [".", "..", "../outside", "/tmp/outside", "a/b", ""] {
+            assert!(uninstall(name).unwrap_err().contains("unsafe package name"));
+        }
+    }
+
+    #[test]
+    fn malformed_xpm_returns_errors_instead_of_panicking() {
+        for text in [
+            ONEOK_STYLE.replace("\"xxx\"", "\"x\""),
+            ONEOK_STYLE.replace("\"xxx\"", "\"猫\""),
+            ONEOK_STYLE.replace("3 2 2 1", "3 2 2 0"),
+            ONEOK_STYLE.replace("3 2 2 1", "4294967295 2 2 1"),
+        ] {
+            assert!(parse_xpm(&text).is_err());
+        }
+        assert_eq!(parse_color("#猫"), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn xpm_comma_is_a_valid_pixel() {
+        let text = "\"1 1 1 1\",\n\", c red\",\n\",\",\n";
+        assert_eq!(parse_xpm(text).unwrap(), (1, 1, vec![255, 0, 0, 255]));
+    }
 
     #[test]
     fn parses_simple_xpm() {

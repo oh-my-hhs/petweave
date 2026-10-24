@@ -16,6 +16,10 @@
 - **图形设置界面**：独立进程 `petweave-settings`（egui/eframe），宠物列表 + 缩略图 / 参数表单 / **按显示器分页的布局画布**（拖拽 + 吸附）/ 保注释保存 / 控制通道实时生效；宿主仍零 GUI 依赖
 - **生态开放**：创建角色包 → [docs/PACKAGES.md](docs/PACKAGES.md)（从零教程）· 贡献与投稿 → [CONTRIBUTING.md](CONTRIBUTING.md)
 
+本轮健壮性修复：包安装先暂存再替换、拒绝越界包名，热重载失败保留原宠物和稳定 ID，
+修复极端边距/Unicode 颜色/XPM 短行导致的崩溃，静止预览复用纹理。验证与剩余边界见
+[项目评审记录](docs/REVIEW.md)。
+
 创新点说明见 [Innovation.md](Innovation.md) · 架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 技术选型见 [docs/TECH_STACK.md](docs/TECH_STACK.md) · 实现计划见 [docs/ROADMAP.md](docs/ROADMAP.md) · 图形设置界面计划见 [docs/GUI_ROADMAP.md](docs/GUI_ROADMAP.md)
 
 ## 构建
@@ -23,7 +27,7 @@
 ```bash
 cargo build --release -p petweave           # 宿主: target/release/petweave（Rust 1.80+）
 cargo build --release -p petweave-settings  # 设置面板（Rust 1.95+）
-cargo test                                  # 全部测试（186 项；需要 1.95+ 才能编译 settings）
+cargo test                                  # 全部测试（196 项；需要 1.95+ 才能编译 settings）
 ```
 
 GUI 依赖已随仓库的 `.cargo-home` vendored；在没有缓存的机器上首次构建需要联网下载，
